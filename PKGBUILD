@@ -43,7 +43,7 @@ prepare() {
 build() {
     cd "$pkgname-$pkgver"
     export WEBKIT_DISABLE_DMABUF_RENDERER=1
-    npm run tauri build -- --bundles none
+    npm run tauri build -- --no-bundle
 }
 
 package() {
