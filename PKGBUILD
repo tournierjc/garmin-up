@@ -23,6 +23,7 @@ makedepends=(
     'nodejs'
     'npm'
     'pkgconf'
+    'binutils'
     'webkit2gtk-4.1'
     'gtk3'
     'librsvg'
