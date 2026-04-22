@@ -24,6 +24,8 @@ makedepends=(
     'npm'
     'pkgconf'
     'binutils'
+    'cmake'
+    'clang'
     'webkit2gtk-4.1'
     'gtk3'
     'librsvg'
