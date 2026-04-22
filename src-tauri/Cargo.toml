@@ -1,0 +1,67 @@
+[package]
+name = "garmin-up"
+version = "0.1.0"
+description = "Cross-platform Garmin Express replacement"
+authors = ["jct"]
+edition = "2021"
+
+[lib]
+name = "garmin_up_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# XML parsing
+quick-xml = { version = "0.37", features = ["serialize"] }
+
+# FIT file handling
+fitparser = "0.10"
+
+# Device detection
+sysinfo = { version = "0.33", default-features = false, features = ["disk"] }
+
+# HTTP client (Garmin Connect API)
+reqwest = { version = "0.12", features = ["json", "multipart", "cookies", "rustls-tls"], default-features = false }
+
+# Async runtime
+tokio = { version = "1", features = ["rt", "time", "sync", "fs", "macros"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Time/date
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Crypto (checksums, OAuth)
+base64 = "0.22"
+md-5 = "0.10"
+sha1 = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+
+# URL parsing
+url = "2"
+
+# Regex (HTML parsing for SSO flow)
+regex = "1"
+
+# Misc
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+udev = "0.9"
