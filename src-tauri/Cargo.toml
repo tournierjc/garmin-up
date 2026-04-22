@@ -33,6 +33,7 @@ sysinfo = { version = "0.33", default-features = false, features = ["disk"] }
 # HTTP client (Garmin Connect API)
 reqwest = { version = "0.12", features = ["json", "multipart", "cookies", "rustls-tls-native-roots-no-provider"], default-features = false }
 aws-lc-rs = "1"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 
 # Async runtime
 tokio = { version = "1", features = ["rt", "time", "sync", "fs", "macros"] }

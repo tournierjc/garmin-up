@@ -40,6 +40,7 @@ sha256sums=('SKIP')
 
 prepare() {
     cd "$pkgname-$pkgver"
+    rm -rf src-tauri/target
     npm ci --ignore-scripts
 }
 
