@@ -1,3 +1,3 @@
 mod manager;
 
-pub use manager::{BackupManager, BackupProgress, BackupResult};
+pub use manager::{BackupManager, BackupResult};

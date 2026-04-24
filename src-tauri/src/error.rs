@@ -16,6 +16,7 @@ pub enum AppError {
     DeviceNotFound(String),
 
     #[error("FIT parse error: {0}")]
+    #[allow(dead_code)]
     FitParse(String),
 
     #[error("Auth error: {0}")]

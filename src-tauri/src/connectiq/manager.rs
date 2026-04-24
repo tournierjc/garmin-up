@@ -5,6 +5,7 @@ use tokio::fs;
 use crate::error::AppError;
 
 const IQ_APPS_DIR: &str = "Garmin/Apps";
+#[allow(dead_code)]
 const IQ_WATCHFACES_DIR: &str = "Garmin/Apps";
 
 #[derive(Debug, Clone, Serialize)]
@@ -15,6 +16,7 @@ pub struct InstalledApp {
     pub app_type: AppType,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 pub enum AppType {
     WatchApp,

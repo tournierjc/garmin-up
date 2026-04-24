@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
+#[allow(dead_code)]
 const UNIT_UPDATE_URL: &str = "https://omt.garmin.com/Rce/ProtobufApi/SoftwareUpdateService/GetAllUnitSoftwareUpdates";
 const EXPRESS_UPDATE_URL: &str = "https://www.garmin.com/express/updateCheck";
 

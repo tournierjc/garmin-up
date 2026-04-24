@@ -101,6 +101,7 @@ pub fn parse_str(xml: &str) -> Result<GarminDevice, AppError> {
     Ok(device)
 }
 
+#[allow(dead_code)]
 pub fn parse_from_escaped_xml(escaped: &str) -> Result<GarminDevice, AppError> {
     let unescaped = escaped
         .replace("&lt;", "<")

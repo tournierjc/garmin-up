@@ -50,6 +50,7 @@ pub struct DeviceInfo {
     pub firmware_version: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SoftwareUpdateInfo {

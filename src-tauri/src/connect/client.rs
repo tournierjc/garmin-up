@@ -88,6 +88,7 @@ impl GarminClient {
         Ok(devices)
     }
 
+    #[allow(dead_code)]
     pub async fn get_device_settings(
         &self,
         token: &OAuth2Token,

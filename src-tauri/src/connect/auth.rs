@@ -5,6 +5,7 @@ use super::types::{GarminSession, OAuth1Token, OAuth2Token, OAuthConsumer};
 
 const SSO_LOGIN_PAGE: &str = "https://sso.garmin.com/mobile/sso/en/sign-in";
 const SSO_LOGIN_API: &str = "https://sso.garmin.com/mobile/api/login";
+#[allow(dead_code)]
 const SSO_MFA_VERIFY: &str = "https://sso.garmin.com/mobile/api/mfa/verifyCode";
 const OAUTH_CONSUMER_URL: &str = "https://thegarth.s3.amazonaws.com/oauth_consumer.json";
 const OAUTH1_PREAUTHORIZED: &str = "https://connectapi.garmin.com/oauth-service/oauth/preauthorized";

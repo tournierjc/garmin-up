@@ -2,7 +2,7 @@ use std::path::Path;
 use tokio::fs;
 
 use crate::error::AppError;
-use super::checker::{FirmwareChecker, FirmwareInfo, UpdateCheckRequest};
+use super::checker::{FirmwareChecker, FirmwareInfo};
 
 pub struct FirmwareInstaller;
 
