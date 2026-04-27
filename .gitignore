@@ -13,6 +13,7 @@ dist-ssr
 *.local
 src-tauri/target/
 *.tar.gz
+*.crate
 /src/
 /pkg/
 
