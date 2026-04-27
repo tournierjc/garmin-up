@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RollForward>LatestMajor</RollForward>
+    <!-- Override with: dotnet build -p:GarminExpressDir=/path/to/Express -->
+    <GarminExpressDir Condition="'$(GARMIN_EXPRESS_DIR)' != ''">$(GARMIN_EXPRESS_DIR)</GarminExpressDir>
+    <GarminExpressDir Condition="'$(GarminExpressDir)' == ''">/home/jct/Documents/Garmin/Express</GarminExpressDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Garmin.Cartography.Services.Interface.ProtoBufService.Dto">
+      <HintPath>$(GarminExpressDir)/Garmin.Cartography.Services.Interface.ProtoBufService.Dto.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="protobuf-net">
+      <HintPath>$(GarminExpressDir)/protobuf-net.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

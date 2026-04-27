@@ -24,7 +24,9 @@ pub async fn get_device_info(
 
 #[tauri::command]
 pub async fn refresh_devices(state: State<'_, DeviceState>) -> Result<Vec<DetectedDevice>, AppError> {
-    let detected = crate::device::detector::scan_for_devices();
+    let detected = tokio::task::spawn_blocking(crate::device::detector::scan_for_devices)
+        .await
+        .map_err(|err| AppError::Other(format!("device scan task failed: {err}")))?;
     let mut devices = state.devices.lock().await;
     *devices = detected.clone();
     Ok(detected)

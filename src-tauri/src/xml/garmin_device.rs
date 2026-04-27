@@ -39,48 +39,48 @@ pub struct Unlock {
     pub code: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MassStorageMode {
-    #[serde(rename = "DataType", default)]
+    #[serde(alias = "DataType", default)]
     pub data_types: Vec<DataType>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataType {
-    #[serde(rename = "Name")]
+    #[serde(alias = "Name")]
     pub name: String,
 
-    #[serde(rename = "File", default)]
+    #[serde(alias = "File", default)]
     pub files: Vec<DataFile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataFile {
-    #[serde(rename = "Specification")]
+    #[serde(alias = "Specification")]
     pub specification: FileSpecification,
 
-    #[serde(rename = "Location")]
+    #[serde(alias = "Location")]
     pub location: FileLocation,
 
-    #[serde(rename = "TransferDirection")]
+    #[serde(alias = "TransferDirection")]
     pub transfer_direction: TransferDirection,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSpecification {
-    #[serde(rename = "Identifier")]
+    #[serde(alias = "Identifier")]
     pub identifier: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileLocation {
-    #[serde(rename = "Path")]
+    #[serde(alias = "Path")]
     pub path: String,
 
-    #[serde(rename = "BaseName", default)]
+    #[serde(alias = "BaseName", default)]
     pub base_name: Option<String>,
 
-    #[serde(rename = "FileExtension")]
+    #[serde(alias = "FileExtension")]
     pub file_extension: String,
 }
 

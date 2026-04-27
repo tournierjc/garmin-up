@@ -12,6 +12,12 @@ pub enum AppError {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("Protobuf decode error: {0}")]
+    ProtobufDecode(#[from] prost::DecodeError),
+
     #[error("Device not found: {0}")]
     DeviceNotFound(String),
 

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use super::detector;
 
@@ -11,7 +11,14 @@ pub async fn watch_devices(app: AppHandle) {
     let mut last_count = 0usize;
 
     loop {
-        let devices = detector::scan_for_devices();
+        let devices = match tokio::task::spawn_blocking(detector::scan_for_devices).await {
+            Ok(devices) => devices,
+            Err(err) => {
+                error!("Device scan task failed: {err}");
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                continue;
+            }
+        };
         let count = devices.len();
 
         if count != last_count {

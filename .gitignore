@@ -16,6 +16,16 @@ src-tauri/target/
 /src/
 /pkg/
 
+# Local makepkg / packaging workspace
+/packaging/pkg/
+/packaging/src/
+/packaging/*.pkg.tar.zst
+.cargo-home/
+
+# .NET (tools/omt-probe)
+tools/omt-probe/bin/
+tools/omt-probe/obj/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

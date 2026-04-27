@@ -1,6 +1,6 @@
 # Maintainer: jct
 pkgname=garmin-up
-pkgver=0.1.1
+pkgver=0.1.2
 pkgrel=1
 pkgdesc="Cross-platform Garmin Express replacement built with Rust + Tauri + React"
 arch=('x86_64')
@@ -34,8 +34,12 @@ makedepends=(
 optdepends=(
     'kio-extras: KDE file manager integration'
     'qt6-wayland: Wayland support under KDE Plasma 6'
+    'gvfs-mtp: MTP support for newer Garmin devices (Fenix, etc.)'
 )
-source=("$pkgname-$pkgver.tar.gz::https://github.com/tournierjc/garmin-up/archive/refs/tags/v$pkgver.tar.gz")
+options=('!lto')
+source=(
+    "$pkgname-$pkgver.tar.gz::https://github.com/tournierjc/garmin-up/archive/refs/tags/v$pkgver.tar.gz"
+)
 sha256sums=('SKIP')
 
 prepare() {
@@ -47,6 +51,8 @@ prepare() {
 build() {
     cd "$pkgname-$pkgver"
     export WEBKIT_DISABLE_DMABUF_RENDERER=1
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=gcc \
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-fuse-ld=bfd" \
     npm run tauri build -- --no-bundle
 }
 
@@ -54,9 +60,15 @@ package() {
     cd "$pkgname-$pkgver"
 
     local _binary="src-tauri/target/release/garmin-up"
+    local _binary_dest="/usr/lib/$pkgname/$pkgname"
     local _icon_src="src-tauri/icons"
 
-    install -Dm755 "$_binary" "$pkgdir/usr/bin/$pkgname"
+    install -Dm755 "$_binary" "$pkgdir$_binary_dest"
+    install -Dm755 /dev/stdin "$pkgdir/usr/bin/$pkgname" <<'EOF'
+#!/bin/sh
+export WEBKIT_DISABLE_DMABUF_RENDERER=1
+exec "/usr/lib/garmin-up/garmin-up" "$@"
+EOF
 
     for size in 32 128; do
         install -Dm644 "$_icon_src/${size}x${size}.png" \
@@ -78,8 +90,56 @@ Keywords=garmin;gps;fitness;sync;
 StartupWMClass=garmin-up
 EOF
 
+    # Auto-mount helper for Garmin USB mass storage
+    install -Dm755 /dev/stdin "$pkgdir/usr/lib/garmin-up/mount-garmin.sh" <<'MOUNTSIG'
+#!/bin/sh
+ACTION="$1"
+DEVICE="$2"
+DEV_NODE="/dev/$DEVICE"
+
+log() {
+    logger -t garmin-mount "$@"
+}
+
+case "$ACTION" in
+    add)
+        sleep 1
+        [ -b "$DEV_NODE" ] || { log "Device $DEV_NODE not found"; exit 1; }
+
+        FSTYPE=$(blkid -o value -s TYPE "$DEV_NODE" 2>/dev/null || echo "auto")
+        LABEL=$(blkid -o value -s LABEL "$DEV_NODE" 2>/dev/null || echo "Garmin")
+        MOUNT_POINT="/run/media/garmin-$LABEL"
+
+        mkdir -p "$MOUNT_POINT"
+
+        # Prefer udisks2 if available (user-friendly mount)
+        if command -v udisksctl >/dev/null 2>&1; then
+            udisksctl mount -b "$DEV_NODE" --no-user-interaction >/dev/null 2>&1 && \
+                log "Mounted $DEV_NODE via udisks2"
+        # Fall back to direct mount with broad permissions
+        elif mount -t "$FSTYPE" -o rw,flush,utf8,umask=000 "$DEV_NODE" "$MOUNT_POINT" 2>/dev/null; then
+            log "Mounted $DEV_NODE at $MOUNT_POINT"
+        else
+            log "Failed to mount $DEV_NODE"
+            rmdir "$MOUNT_POINT" 2>/dev/null
+        fi
+        ;;
+    remove)
+        MOUNT_POINT=$(findmnt -n -o TARGET -S "$DEV_NODE" 2>/dev/null)
+        if [ -n "$MOUNT_POINT" ]; then
+            umount "$MOUNT_POINT" 2>/dev/null && log "Unmounted $MOUNT_POINT"
+            rmdir "$MOUNT_POINT" 2>/dev/null
+        fi
+        ;;
+esac
+MOUNTSIG
+
     install -Dm644 /dev/stdin "$pkgdir/usr/lib/udev/rules.d/60-garmin.rules" <<EOF
-# Garmin GPS devices
-SUBSYSTEM=="usb", ATTRS{idVendor}=="091e", MODE="0664", GROUP="plugdev", TAG+="uaccess"
+# Garmin GPS devices - permissions (uaccess for systemd-logind, no plugdev needed on Arch)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="091e", TAG+="uaccess"
+
+# Auto-mount Garmin mass storage partitions
+SUBSYSTEM=="block", ENV{ID_VENDOR_ID}=="091e", ACTION=="add", ENV{DEVTYPE}=="partition", RUN+="/usr/lib/garmin-up/mount-garmin.sh add %k"
+SUBSYSTEM=="block", ENV{ID_VENDOR_ID}=="091e", ACTION=="remove", ENV{DEVTYPE}=="partition", RUN+="/usr/lib/garmin-up/mount-garmin.sh remove %k"
 EOF
 }

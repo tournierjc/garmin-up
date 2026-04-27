@@ -1,0 +1,119 @@
+syntax = "proto3";
+
+package garmin.omt.mapupdate;
+
+// Wire layout aligned with Garmin.Cartography.Services.Interface.ProtoBufService.Dto.dll
+// (protobuf-net implicit field numbers = C# property declaration order). Validate with tools/omt-probe.
+
+message Client {
+  string client_type = 1;
+  string locale_code = 2;
+  string operating_system_type = 3;
+  string operating_system_version = 4;
+}
+
+// protobuf-net Nullable<DateTime> for AutoCheckSettings.DisableChecksUntil (nested layout).
+message NetDateTime {
+  int64 value = 1;
+}
+
+message AutoCheckSettings {
+  int32 minimum_days_between_checks = 1;
+  NetDateTime disable_checks_until = 2;
+  bool is_auto_check_enabled = 3;
+}
+
+message BasicUnitInfo {
+  int64 unit_id = 1;
+  string serial_number = 2;
+  optional int64 first_fix = 3;
+}
+
+message FullUnitInfo {
+  int64 unit_id = 1;
+  string serial_number = 2;
+  optional int64 first_fix = 3;
+  string software_part_number = 4;
+  string software_version = 5;
+  repeated string supported_content_types = 6;
+  repeated string current_part_numbers = 7;
+}
+
+message PreloadedMapUpdatesRequest {
+  Client client_info = 1;
+  BasicUnitInfo basic_unit_info = 2;
+  bool is_user_interactive = 3;
+}
+
+message MapUpdateInfo {
+  string product_key = 1;
+  bool is_reinstall = 2;
+  string part_number = 3;
+  int32 update_type = 4;
+  int32 major_version = 5;
+  int32 minor_version = 6;
+  string product_group = 7;
+  string display_name = 8;
+  string eula_url = 9;
+  bool can_auto_start_download = 10;
+  string release_notes = 11;
+}
+
+message PreloadedMapUpdatesResponse {
+  AutoCheckSettings auto_check_settings = 1;
+  repeated MapUpdateInfo map_updates = 2;
+  repeated string purchasable_products = 3;
+}
+
+message FileToRemove {
+  string identifier = 1;
+  bool is_file_name = 2;
+  int64 size_in_bytes = 3;
+}
+
+message DownloadDetailsRequest {
+  Client client_info = 1;
+  FullUnitInfo full_unit_info = 2;
+  string part_number = 3;
+}
+
+message UrlDto {
+  int32 type = 1;
+  string url = 2;
+  string md5 = 3;
+  optional int64 size = 4;
+  bool is_relative = 5;
+}
+
+message DeliverableContent {
+  repeated DeliverableContent additional_content = 1;
+  FileToRemove content_to_replace = 2;
+  string content_type = 3;
+  string display_name = 4;
+  repeated DeliverableContent extra_contents = 5;
+  repeated FileToRemove extra_contents_to_replace = 6;
+  bytes gma = 7;
+  int32 id = 8;
+  bool is_package = 9;
+  bool is_recommended = 10;
+  bool is_reinstall_only = 11;
+  string locale = 12;
+  string part_number = 13;
+  string part_number_to_replace = 14;
+  repeated DeliverableContent smaller_content_options = 15;
+  string unlock_code = 16;
+  repeated UrlDto urls = 17;
+}
+
+message DownloadHosts {
+  string background_primary_host = 1;
+  string foreground_primary_host = 2;
+  repeated string failover_hosts = 3;
+}
+
+message DownloadDetailsResponse {
+  repeated FileToRemove files_to_remove = 1;
+  repeated DeliverableContent available_contents = 2;
+  string computer_install_url = 3;
+  DownloadHosts download_hosts = 4;
+}
