@@ -27,6 +27,7 @@ interface MapUpdatesDebug {
   purchasable_products: string[];
   auto_check_enabled: boolean | null;
   verbose_details_len?: number | null;
+  verbose_details_sample?: [string, string][] | null;
 }
 
 interface UpdatesPageProps {
@@ -203,6 +204,16 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
                           <div>auto_check_enabled: {String(dbg.auto_check_enabled)}</div>
                           {dbg.verbose_details_len !== undefined && (
                             <div>verbose_details_len: {String(dbg.verbose_details_len)}</div>
+                          )}
+                          {dbg.verbose_details_sample && dbg.verbose_details_sample.length > 0 && (
+                            <div style={{ whiteSpace: "pre-wrap" }}>
+                              details_sample:
+                              {"\n"}
+                              {dbg.verbose_details_sample
+                                .slice(0, 25)
+                                .map(([k, v]) => `${k}=${v}`)
+                                .join("\n")}
+                            </div>
                           )}
                         </div>
                       </details>

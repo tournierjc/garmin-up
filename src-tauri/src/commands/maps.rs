@@ -91,6 +91,7 @@ pub struct MapUpdatesDebug {
     pub purchasable_products: Vec<String>,
     pub auto_check_enabled: Option<bool>,
     pub verbose_details_len: Option<usize>,
+    pub verbose_details_sample: Option<Vec<(String, String)>>,
 }
 
 #[tauri::command]
@@ -149,6 +150,13 @@ pub async fn check_map_updates_debug(
             .as_ref()
             .map(|s| s.is_auto_check_enabled),
         verbose_details_len: verbose.as_ref().map(|v| v.details.len()),
+        verbose_details_sample: verbose.as_ref().map(|v| {
+            v.details
+                .iter()
+                .take(25)
+                .map(|(k, val)| (k.clone(), val.clone()))
+                .collect()
+        }),
     })
 }
 

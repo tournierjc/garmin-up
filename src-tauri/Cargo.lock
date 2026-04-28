@@ -1185,7 +1185,7 @@ dependencies = [
 
 [[package]]
 name = "garmin-up"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
