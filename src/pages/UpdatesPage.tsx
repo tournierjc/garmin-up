@@ -21,6 +21,13 @@ interface MapUpdateSummary {
   can_auto_start_download: boolean;
 }
 
+interface MapUpdatesDebug {
+  serial: string;
+  map_updates: MapUpdateSummary[];
+  purchasable_products: string[];
+  auto_check_enabled: boolean | null;
+}
+
 interface UpdatesPageProps {
   devices: DetectedDevice[];
 }
@@ -30,6 +37,7 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
   const [installing, setInstalling] = useState(false);
   const [firmwareInfo, setFirmwareInfo] = useState<Record<string, FirmwareInfo>>({});
   const [mapUpdates, setMapUpdates] = useState<Record<string, MapUpdateSummary[]>>({});
+  const [mapDebug, setMapDebug] = useState<Record<string, MapUpdatesDebug>>({});
   const [error, setError] = useState<string | null>(null);
 
   async function handleCheckAll() {
@@ -38,15 +46,21 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
     try {
       const results: Record<string, FirmwareInfo> = {};
       const mapResults: Record<string, MapUpdateSummary[]> = {};
+      const debugResults: Record<string, MapUpdatesDebug> = {};
       for (const device of devices) {
         const info = await invoke<FirmwareInfo>("check_firmware_update", { unitId: device.unit_id });
         results[device.unit_id] = info;
 
         const maps = await invoke<MapUpdateSummary[]>("check_map_updates", { unitId: device.unit_id });
         mapResults[device.unit_id] = maps;
+
+        // Always fetch debug so we can understand empty-map cases (matches backend response).
+        const dbg = await invoke<MapUpdatesDebug>("check_map_updates_debug", { unitId: device.unit_id });
+        debugResults[device.unit_id] = dbg;
       }
       setFirmwareInfo(results);
       setMapUpdates(mapResults);
+      setMapDebug(debugResults);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -113,6 +127,7 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
       {devices.map((device) => {
         const info = firmwareInfo[device.unit_id];
         const maps = mapUpdates[device.unit_id];
+        const dbg = mapDebug[device.unit_id];
         return (
           <div key={device.unit_id} className="backup-card">
             <div className="backup-card-header">
@@ -176,7 +191,19 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
                     ))}
                   </div>
                 ) : (
-                  <span className="text-secondary">No map updates</span>
+                  <div style={{ display: "grid", gap: "0.35rem" }}>
+                    <span className="text-secondary">No map updates</span>
+                    {dbg && (
+                      <details className="mono text-secondary" style={{ fontSize: "0.85rem" }}>
+                        <summary>Debug details</summary>
+                        <div style={{ marginTop: "0.35rem", display: "grid", gap: "0.25rem" }}>
+                          <div>serial: {dbg.serial}</div>
+                          <div>purchasable_products: {dbg.purchasable_products.length}</div>
+                          <div>auto_check_enabled: {String(dbg.auto_check_enabled)}</div>
+                        </div>
+                      </details>
+                    )}
+                  </div>
                 )
               ) : (
                 <span className="text-secondary">Not checked yet</span>
