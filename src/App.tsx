@@ -1,8 +1,34 @@
-export default function App() {
+import { useState } from "react";
+import { Sidebar } from "./components/Sidebar";
+import { DevicesPage } from "./pages/DevicesPage";
+import { BackupPage } from "./pages/BackupPage";
+import { SyncPage } from "./pages/SyncPage";
+import { UpdatesPage } from "./pages/UpdatesPage";
+import { useDevices } from "./hooks/useDevices";
+import type { Page } from "./types";
+import "./App.css";
+
+function App() {
+  const [activePage, setActivePage] = useState<Page>("devices");
+  const { devices, loading, error, refresh } = useDevices();
+
   return (
-    <main style={{ padding: "1.5rem", fontFamily: "system-ui, sans-serif" }}>
-      <h1>Garmin Up</h1>
-      <p>UI shell — device and maps logic run in the Tauri backend.</p>
-    </main>
+    <div className="app-layout">
+      <Sidebar
+        activePage={activePage}
+        onNavigate={setActivePage}
+        deviceCount={devices.length}
+      />
+      <main className="content">
+        {activePage === "devices" && (
+          <DevicesPage devices={devices} loading={loading} error={error} onRefresh={refresh} />
+        )}
+        {activePage === "backup" && <BackupPage devices={devices} />}
+        {activePage === "sync" && <SyncPage />}
+        {activePage === "updates" && <UpdatesPage devices={devices} />}
+      </main>
+    </div>
   );
 }
+
+export default App;
