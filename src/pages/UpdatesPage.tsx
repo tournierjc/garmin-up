@@ -12,6 +12,15 @@ interface FirmwareInfo {
   release_notes: string | null;
 }
 
+interface MapUpdateSummary {
+  product_group: string;
+  display_name: string;
+  version: string;
+  part_number: string;
+  update_type: number;
+  can_auto_start_download: boolean;
+}
+
 interface UpdatesPageProps {
   devices: DetectedDevice[];
 }
@@ -20,6 +29,7 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
   const [checking, setChecking] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [firmwareInfo, setFirmwareInfo] = useState<Record<string, FirmwareInfo>>({});
+  const [mapUpdates, setMapUpdates] = useState<Record<string, MapUpdateSummary[]>>({});
   const [error, setError] = useState<string | null>(null);
 
   async function handleCheckAll() {
@@ -27,11 +37,16 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
     setError(null);
     try {
       const results: Record<string, FirmwareInfo> = {};
+      const mapResults: Record<string, MapUpdateSummary[]> = {};
       for (const device of devices) {
         const info = await invoke<FirmwareInfo>("check_firmware_update", { unitId: device.unit_id });
         results[device.unit_id] = info;
+
+        const maps = await invoke<MapUpdateSummary[]>("check_map_updates", { unitId: device.unit_id });
+        mapResults[device.unit_id] = maps;
       }
       setFirmwareInfo(results);
+      setMapUpdates(mapResults);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -56,6 +71,21 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
     }
   }
 
+  async function handleInstallMap(unitId: string, partNumber: string) {
+    setInstalling(true);
+    setError(null);
+    try {
+      await invoke<string[]>("download_and_install_map_update", { unitId, partNumber });
+      const updated = { ...mapUpdates };
+      updated[unitId] = (updated[unitId] || []).filter((u) => u.part_number !== partNumber);
+      setMapUpdates(updated);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setInstalling(false);
+    }
+  }
+
   if (devices.length === 0) {
     return (
       <div className="page">
@@ -65,7 +95,7 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
         <div className="placeholder-content">
           <span className="placeholder-icon">⬆</span>
           <h3>No Devices Connected</h3>
-          <p>Connect a Garmin device via USB to check for firmware updates.</p>
+          <p>Connect a Garmin device via USB to check for firmware and map updates.</p>
         </div>
       </div>
     );
@@ -82,6 +112,7 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
 
       {devices.map((device) => {
         const info = firmwareInfo[device.unit_id];
+        const maps = mapUpdates[device.unit_id];
         return (
           <div key={device.unit_id} className="backup-card">
             <div className="backup-card-header">
@@ -107,6 +138,49 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
                   <span className="text-secondary">Up to date</span>
                 ) : null}
               </div>
+            </div>
+
+            <div style={{ marginTop: "0.75rem" }}>
+              <div className="mono text-secondary" style={{ marginBottom: "0.35rem" }}>
+                Map updates
+              </div>
+              {maps ? (
+                maps.length > 0 ? (
+                  <div style={{ display: "grid", gap: "0.5rem" }}>
+                    {maps.map((m) => (
+                      <div
+                        key={m.part_number}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: "0.75rem",
+                        }}
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {m.display_name || m.product_group}
+                          </div>
+                          <div className="mono text-secondary" style={{ fontSize: "0.85rem" }}>
+                            {m.part_number} · v{m.version}
+                          </div>
+                        </div>
+                        <button
+                          className="btn btn-accent"
+                          onClick={() => handleInstallMap(device.unit_id, m.part_number)}
+                          disabled={installing}
+                        >
+                          {installing ? "Installing…" : "Install"}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <span className="text-secondary">No map updates</span>
+                )
+              ) : (
+                <span className="text-secondary">Not checked yet</span>
+              )}
             </div>
           </div>
         );
