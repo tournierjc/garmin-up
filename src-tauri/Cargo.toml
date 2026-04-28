@@ -1,6 +1,6 @@
 [package]
 name = "garmin-up"
-version = "0.1.8"
+version = "0.1.9"
 description = "Cross-platform Garmin Express replacement"
 authors = ["jct"]
 edition = "2021"

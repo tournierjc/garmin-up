@@ -13,6 +13,8 @@ pub mod proto {
 const UNIT_INFO_BASE: &str = "https://omt.garmin.com/api/unit-info/manufacturers/Taiwan";
 const PRELOADED_MAP_UPDATES_URL: &str =
     "https://omt.garmin.com/Rce/ProtobufApi/MapUpdateService/GetPreloadedMapUpdates";
+const PRELOADED_MAP_UPDATES_VERBOSE_URL: &str =
+    "https://omt.garmin.com/Rce/ProtobufApi/MapUpdateService/GetPreloadedMapUpdatesVerbose";
 const DOWNLOAD_DETAILS_URL: &str =
     "https://omt.garmin.com/Rce/ProtobufApi/MapUpdateService/GetDownloadDetails";
 
@@ -96,6 +98,44 @@ impl MapUpdateClient {
 
         let body = resp.bytes().await?;
         let parsed = proto::PreloadedMapUpdatesResponse::decode(body.as_ref())?;
+        Ok(parsed)
+    }
+
+    pub async fn get_preloaded_map_updates_verbose(
+        &self,
+        unit_id: &str,
+        serial_number: &str,
+    ) -> Result<proto::PreloadedMapUpdatesVerboseResponse, AppError> {
+        let req = proto::PreloadedMapUpdatesRequest {
+            client_info: Some(build_client_info()),
+            basic_unit_info: Some(proto::BasicUnitInfo {
+                unit_id: parse_unit_id(unit_id),
+                serial_number: serial_number.to_string(),
+                first_fix: None,
+            }),
+            is_user_interactive: true,
+        };
+
+        let bytes = req.encode_to_vec();
+        let resp = self
+            .http
+            .post(PRELOADED_MAP_UPDATES_VERBOSE_URL)
+            .header("Content-Type", "application/x-protobuf")
+            .header("Accept", "application/x-protobuf")
+            .header("Accept-Language", detect_accept_language())
+            .body(bytes)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(AppError::Api {
+                status: resp.status().as_u16(),
+                message: resp.text().await.unwrap_or_default(),
+            });
+        }
+
+        let body = resp.bytes().await?;
+        let parsed = proto::PreloadedMapUpdatesVerboseResponse::decode(body.as_ref())?;
         Ok(parsed)
     }
 

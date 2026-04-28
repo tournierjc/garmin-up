@@ -90,6 +90,7 @@ pub struct MapUpdatesDebug {
     pub map_updates: Vec<MapUpdateSummary>,
     pub purchasable_products: Vec<String>,
     pub auto_check_enabled: Option<bool>,
+    pub verbose_details_len: Option<usize>,
 }
 
 #[tauri::command]
@@ -112,14 +113,42 @@ pub async fn check_map_updates_debug(
         .get_preloaded_map_updates(&device.unit_id, &serial)
         .await?;
 
+    // Best-effort: verbose endpoint sometimes includes additional details/updates.
+    let verbose = client
+        .get_preloaded_map_updates_verbose(&device.unit_id, &serial)
+        .await
+        .ok();
+
     Ok(MapUpdatesDebug {
         serial,
-        map_updates: resp.map_updates.into_iter().map(MapUpdateSummary::from_proto).collect(),
-        purchasable_products: resp.purchasable_products,
+        map_updates: if let Some(v) = &verbose {
+            if !v.map_updates.is_empty() {
+                v.map_updates
+                    .clone()
+                    .into_iter()
+                    .map(MapUpdateSummary::from_proto)
+                    .collect()
+            } else {
+                resp.map_updates
+                    .into_iter()
+                    .map(MapUpdateSummary::from_proto)
+                    .collect()
+            }
+        } else {
+            resp.map_updates
+                .into_iter()
+                .map(MapUpdateSummary::from_proto)
+                .collect()
+        },
+        purchasable_products: verbose
+            .as_ref()
+            .map(|v| v.purchasable_products.clone())
+            .unwrap_or(resp.purchasable_products),
         auto_check_enabled: resp
             .auto_check_settings
             .as_ref()
             .map(|s| s.is_auto_check_enabled),
+        verbose_details_len: verbose.as_ref().map(|v| v.details.len()),
     })
 }
 

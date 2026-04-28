@@ -65,6 +65,13 @@ message PreloadedMapUpdatesResponse {
   repeated string purchasable_products = 3;
 }
 
+message PreloadedMapUpdatesVerboseResponse {
+  map<string, string> details = 1;
+  AutoCheckSettings auto_check_settings = 2;
+  repeated MapUpdateInfo map_updates = 3;
+  repeated string purchasable_products = 4;
+}
+
 message FileToRemove {
   string identifier = 1;
   bool is_file_name = 2;

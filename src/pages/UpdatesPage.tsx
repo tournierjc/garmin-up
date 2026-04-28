@@ -26,6 +26,7 @@ interface MapUpdatesDebug {
   map_updates: MapUpdateSummary[];
   purchasable_products: string[];
   auto_check_enabled: boolean | null;
+  verbose_details_len?: number | null;
 }
 
 interface UpdatesPageProps {
@@ -200,6 +201,9 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
                           <div>serial: {dbg.serial}</div>
                           <div>purchasable_products: {dbg.purchasable_products.length}</div>
                           <div>auto_check_enabled: {String(dbg.auto_check_enabled)}</div>
+                          {dbg.verbose_details_len !== undefined && (
+                            <div>verbose_details_len: {String(dbg.verbose_details_len)}</div>
+                          )}
                         </div>
                       </details>
                     )}
