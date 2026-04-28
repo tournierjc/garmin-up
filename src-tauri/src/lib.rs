@@ -47,6 +47,7 @@ pub fn run() {
             commands::maps::install_map,
             commands::maps::remove_map,
             commands::maps::check_map_updates,
+            commands::maps::check_map_updates_debug,
             commands::maps::download_and_install_map_update,
             commands::connectiq::list_iq_apps,
             commands::connectiq::install_iq_app,

@@ -85,6 +85,45 @@ pub async fn check_map_updates(
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct MapUpdatesDebug {
+    pub serial: String,
+    pub map_updates: Vec<MapUpdateSummary>,
+    pub purchasable_products: Vec<String>,
+    pub auto_check_enabled: Option<bool>,
+}
+
+#[tauri::command]
+pub async fn check_map_updates_debug(
+    unit_id: String,
+    state: State<'_, DeviceState>,
+) -> Result<MapUpdatesDebug, AppError> {
+    let devices = state.devices.lock().await;
+    let device = devices
+        .iter()
+        .find(|d| d.unit_id == unit_id)
+        .ok_or_else(|| AppError::DeviceNotFound(unit_id.clone()))?;
+
+    let client = MapUpdateClient::new()?;
+    let serial = client
+        .get_unit_serial_number(&device.unit_id, &device.part_number)
+        .await?;
+
+    let resp = client
+        .get_preloaded_map_updates(&device.unit_id, &serial)
+        .await?;
+
+    Ok(MapUpdatesDebug {
+        serial,
+        map_updates: resp.map_updates.into_iter().map(MapUpdateSummary::from_proto).collect(),
+        purchasable_products: resp.purchasable_products,
+        auto_check_enabled: resp
+            .auto_check_settings
+            .as_ref()
+            .map(|s| s.is_auto_check_enabled),
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct MapUpdateSummary {
     pub product_group: String,
     pub display_name: String,

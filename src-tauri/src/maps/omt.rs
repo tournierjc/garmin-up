@@ -82,6 +82,7 @@ impl MapUpdateClient {
             .post(PRELOADED_MAP_UPDATES_URL)
             .header("Content-Type", "application/x-protobuf")
             .header("Accept", "application/x-protobuf")
+            .header("Accept-Language", detect_accept_language())
             .body(bytes)
             .send()
             .await?;
@@ -126,6 +127,7 @@ impl MapUpdateClient {
             .post(DOWNLOAD_DETAILS_URL)
             .header("Content-Type", "application/x-protobuf")
             .header("Accept", "application/x-protobuf")
+            .header("Accept-Language", detect_accept_language())
             .body(bytes)
             .send()
             .await?;
