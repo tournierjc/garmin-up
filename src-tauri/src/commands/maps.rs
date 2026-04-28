@@ -69,18 +69,23 @@ pub async fn check_map_updates(
         .find(|d| d.unit_id == unit_id)
         .ok_or_else(|| AppError::DeviceNotFound(unit_id.clone()))?;
 
+    // Match Garmin Express: JSON request body to /Rce/ProtobufApi/MapUpdateService/GetPreloadedMapUpdates
     let client = MapUpdateClient::new()?;
-    let serial = client
-        .get_unit_serial_number(&device.unit_id, &device.part_number)
-        .await?;
+    let device_xml_path = PathBuf::from(&device.mount_path)
+        .join("GARMIN")
+        .join("GarminDevice.xml");
+    let device_xml = tokio::fs::read_to_string(&device_xml_path).await.ok();
 
     let resp = client
-        .get_preloaded_map_updates(&device.unit_id, &serial)
+        .get_preloaded_map_updates_json(&device.unit_id, &device.part_number, device_xml)
         .await?;
+
     Ok(resp
+        .1
         .map_updates
+        .unwrap_or_default()
         .into_iter()
-        .map(MapUpdateSummary::from_proto)
+        .map(MapUpdateSummary::from_json)
         .collect())
 }
 
@@ -106,57 +111,28 @@ pub async fn check_map_updates_debug(
         .ok_or_else(|| AppError::DeviceNotFound(unit_id.clone()))?;
 
     let client = MapUpdateClient::new()?;
-    let serial = client
-        .get_unit_serial_number(&device.unit_id, &device.part_number)
-        .await?;
+    let device_xml_path = PathBuf::from(&device.mount_path)
+        .join("GARMIN")
+        .join("GarminDevice.xml");
+    let device_xml = tokio::fs::read_to_string(&device_xml_path).await.ok();
 
-    let resp = client
-        .get_preloaded_map_updates(&device.unit_id, &serial)
+    let json = client
+        .get_preloaded_map_updates_json(&device.unit_id, &device.part_number, device_xml)
         .await?;
-
-    // Best-effort: verbose endpoint sometimes includes additional details/updates.
-    let verbose = client
-        .get_preloaded_map_updates_verbose(&device.unit_id, &serial)
-        .await
-        .ok();
 
     Ok(MapUpdatesDebug {
-        serial,
-        map_updates: if let Some(v) = &verbose {
-            if !v.map_updates.is_empty() {
-                v.map_updates
-                    .clone()
-                    .into_iter()
-                    .map(MapUpdateSummary::from_proto)
-                    .collect()
-            } else {
-                resp.map_updates
-                    .into_iter()
-                    .map(MapUpdateSummary::from_proto)
-                    .collect()
-            }
-        } else {
-            resp.map_updates
-                .into_iter()
-                .map(MapUpdateSummary::from_proto)
-                .collect()
-        },
-        purchasable_products: verbose
-            .as_ref()
-            .map(|v| v.purchasable_products.clone())
-            .unwrap_or(resp.purchasable_products),
-        auto_check_enabled: resp
-            .auto_check_settings
-            .as_ref()
-            .map(|s| s.is_auto_check_enabled),
-        verbose_details_len: verbose.as_ref().map(|v| v.details.len()),
-        verbose_details_sample: verbose.as_ref().map(|v| {
-            v.details
-                .iter()
-                .take(25)
-                .map(|(k, val)| (k.clone(), val.clone()))
-                .collect()
-        }),
+        serial: json.0,
+        map_updates: json
+            .1
+            .map_updates
+            .unwrap_or_default()
+            .into_iter()
+            .map(MapUpdateSummary::from_json)
+            .collect(),
+        purchasable_products: vec![],
+        auto_check_enabled: json.1.auto_check_settings.map(|s| s.is_auto_check_enabled),
+        verbose_details_len: None,
+        verbose_details_sample: None,
     })
 }
 
@@ -177,6 +153,17 @@ impl MapUpdateSummary {
             display_name: u.display_name,
             version: format!("{}.{}", u.major_version, u.minor_version),
             part_number: u.part_number,
+            update_type: u.update_type,
+            can_auto_start_download: u.can_auto_start_download,
+        }
+    }
+
+    fn from_json(u: crate::maps::omt::JsonMapUpdateInfo) -> Self {
+        Self {
+            product_group: u.product_group.unwrap_or_default(),
+            display_name: u.display_name.unwrap_or_default(),
+            version: format!("{}.{}", u.major_version, u.minor_version),
+            part_number: u.part_number.unwrap_or_default(),
             update_type: u.update_type,
             can_auto_start_download: u.can_auto_start_download,
         }

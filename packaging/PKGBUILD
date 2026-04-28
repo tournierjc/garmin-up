@@ -1,6 +1,6 @@
 # Maintainer: jct
 pkgname=garmin-up
-pkgver=0.1.10
+pkgver=0.1.11
 pkgrel=1
 pkgdesc="Cross-platform Garmin Express replacement built with Rust + Tauri + React"
 arch=('x86_64')

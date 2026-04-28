@@ -1,12 +1,14 @@
 use std::path::{Path, PathBuf};
 
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use prost::Message;
 
 use crate::error::AppError;
 
 pub mod proto {
+    // Still used for download-details payload parsing/installer in older flows.
     include!(concat!(env!("OUT_DIR"), "/garmin.omt.mapupdate.rs"));
 }
 
@@ -20,8 +22,93 @@ const DOWNLOAD_DETAILS_URL: &str =
 
 #[derive(Debug, Clone, Deserialize)]
 struct UnitInfoResponse {
-    #[serde(rename = "serialNumber")]
+    // Observed on the live endpoint as `serialNumber` but Express models it as `SerialNumber`.
+    #[serde(rename = "serialNumber", alias = "SerialNumber")]
     serial_number: String,
+
+    // Express uses this to decide whether to include full DeviceXml in map update request.
+    #[serde(rename = "ApplicationBehaviors", default)]
+    application_behaviors: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonClientInfo {
+    #[serde(rename = "LocaleCode")]
+    pub locale_code: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonBasicUnitInfo {
+    #[serde(rename = "UnitId")]
+    pub unit_id: i64,
+    #[serde(rename = "FirstFix", skip_serializing_if = "Option::is_none")]
+    pub first_fix: Option<i64>,
+    #[serde(rename = "SerialNumber", skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonPreloadedMapUpdatesRequest {
+    #[serde(rename = "ClientInfo")]
+    pub client_info: JsonClientInfo,
+    #[serde(rename = "BasicUnitInfo")]
+    pub basic_unit_info: JsonBasicUnitInfo,
+    #[serde(rename = "IsUserInteractive")]
+    pub is_user_interactive: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonPreloadedMapWithDeviceXmlUpdatesRequest {
+    #[serde(rename = "ClientInfo")]
+    pub client_info: JsonClientInfo,
+    #[serde(rename = "BasicUnitInfo")]
+    pub basic_unit_info: JsonBasicUnitInfo,
+    #[serde(rename = "IsUserInteractive")]
+    pub is_user_interactive: bool,
+    #[serde(rename = "DeviceXml")]
+    pub device_xml: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonAutoCheckSettings {
+    #[serde(rename = "IsAutoCheckEnabled")]
+    pub is_auto_check_enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonMapUpdateInfo {
+    #[serde(rename = "ProductKey", default)]
+    pub product_key: Option<String>,
+    #[serde(rename = "IsReinstall")]
+    pub is_reinstall: bool,
+    #[serde(rename = "PartNumber", default)]
+    pub part_number: Option<String>,
+    #[serde(rename = "UpdateType")]
+    pub update_type: i32,
+    #[serde(rename = "MajorVersion")]
+    pub major_version: i32,
+    #[serde(rename = "MinorVersion")]
+    pub minor_version: i32,
+    #[serde(rename = "ProductGroup", default)]
+    pub product_group: Option<String>,
+    #[serde(rename = "DisplayName", default)]
+    pub display_name: Option<String>,
+    #[serde(rename = "EulaUrl", default)]
+    pub eula_url: Option<String>,
+    #[serde(rename = "CanAutoStartDownload")]
+    pub can_auto_start_download: bool,
+    #[serde(rename = "ReleaseNotes", default)]
+    pub release_notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonPreloadedMapUpdatesResponse {
+    #[serde(rename = "AutoCheckSettings", default)]
+    pub auto_check_settings: Option<JsonAutoCheckSettings>,
+    #[serde(rename = "MapUpdates", default)]
+    pub map_updates: Option<Vec<JsonMapUpdateInfo>>,
+    #[serde(rename = "PurchasableProducts", default)]
+    pub purchasable_products: Option<Vec<serde_json::Value>>,
 }
 
 pub struct MapUpdateClient {
@@ -62,6 +149,32 @@ impl MapUpdateClient {
         Ok(info.serial_number)
     }
 
+    async fn get_unit_display_info(
+        &self,
+        unit_id: &str,
+        firmware_part_number: &str,
+    ) -> Result<UnitInfoResponse, AppError> {
+        let url = format!(
+            "{UNIT_INFO_BASE}/unitids/{unit_id}?primaryFirmwarePartNumber={firmware_part_number}"
+        );
+
+        let resp = self
+            .http
+            .get(url)
+            .header("Accept-Language", detect_accept_language())
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(AppError::Api {
+                status: resp.status().as_u16(),
+                message: "Failed to fetch unit-info".into(),
+            });
+        }
+
+        Ok(resp.json().await?)
+    }
+
     pub async fn get_preloaded_map_updates(
         &self,
         unit_id: &str,
@@ -99,6 +212,64 @@ impl MapUpdateClient {
         let body = resp.bytes().await?;
         let parsed = proto::PreloadedMapUpdatesResponse::decode(body.as_ref())?;
         Ok(parsed)
+    }
+
+    pub async fn get_preloaded_map_updates_json(
+        &self,
+        unit_id: &str,
+        firmware_part_number: &str,
+        device_xml: Option<String>,
+    ) -> Result<(String, JsonPreloadedMapUpdatesResponse), AppError> {
+        let display = self.get_unit_display_info(unit_id, firmware_part_number).await?;
+        let include_full_xml = display
+            .application_behaviors
+            .as_ref()
+            .and_then(|m| m.get("GetPreloadedMapUpdatesIncludeFullXML"))
+            .map(|v| v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let locale = detect_accept_language().replace('-', "_");
+        let client_info = JsonClientInfo { locale_code: locale };
+
+        let basic = JsonBasicUnitInfo {
+            unit_id: parse_unit_id(unit_id),
+            first_fix: None,
+            serial_number: None,
+        };
+
+        let req_body = if include_full_xml {
+            let xml = device_xml.unwrap_or_default();
+            serde_json::to_value(JsonPreloadedMapWithDeviceXmlUpdatesRequest {
+                client_info,
+                basic_unit_info: basic,
+                is_user_interactive: true,
+                device_xml: xml,
+            })?
+        } else {
+            serde_json::to_value(JsonPreloadedMapUpdatesRequest {
+                client_info,
+                basic_unit_info: basic,
+                is_user_interactive: true,
+            })?
+        };
+
+        let resp = self
+            .http
+            .post(PRELOADED_MAP_UPDATES_URL)
+            .header("Accept-Language", detect_accept_language())
+            .json(&req_body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(AppError::Api {
+                status: resp.status().as_u16(),
+                message: resp.text().await.unwrap_or_default(),
+            });
+        }
+
+        let parsed: JsonPreloadedMapUpdatesResponse = resp.json().await?;
+        Ok((display.serial_number, parsed))
     }
 
     pub async fn get_preloaded_map_updates_verbose(
