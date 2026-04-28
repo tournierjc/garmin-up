@@ -117,8 +117,58 @@ pub struct MapUpdateClient {
 
 impl MapUpdateClient {
     pub fn new() -> Result<Self, AppError> {
+        // Mirror Garmin Express' OmtRestClient default headers as closely as possible.
+        let locale = detect_accept_language();
+        let session = uuid::Uuid::new_v4().to_string();
         let http = Client::builder()
             .user_agent("Garmin Express/7.28.0")
+            .default_headers({
+                let mut h = reqwest::header::HeaderMap::new();
+                h.insert(
+                    "Garmin-Client-Name",
+                    reqwest::header::HeaderValue::from_static("express"),
+                );
+                h.insert(
+                    "Garmin-Client-Version",
+                    reqwest::header::HeaderValue::from_static("7.28.0"),
+                );
+                h.insert(
+                    "Garmin-Client-Platform",
+                    reqwest::header::HeaderValue::from_static("Linux"),
+                );
+                let platform_version = std::process::Command::new("uname")
+                    .arg("-r")
+                    .output()
+                    .ok()
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "0".to_string());
+                h.insert(
+                    "Garmin-Client-Platform-Version",
+                    reqwest::header::HeaderValue::from_str(&platform_version)
+                        .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("0")),
+                );
+                h.insert(
+                    "Garmin-Client-LocaleCode",
+                    reqwest::header::HeaderValue::from_str(&locale)
+                        .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("en-US")),
+                );
+                h.insert(
+                    "Garmin-Client-SessionId",
+                    reqwest::header::HeaderValue::from_str(&session).unwrap_or_else(|_| {
+                        reqwest::header::HeaderValue::from_static(
+                            "00000000-0000-0000-0000-000000000000",
+                        )
+                    }),
+                );
+                h.insert(
+                    reqwest::header::ACCEPT_LANGUAGE,
+                    reqwest::header::HeaderValue::from_str(&locale)
+                        .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("en-US")),
+                );
+                h
+            })
             .build()?;
         Ok(Self { http })
     }
@@ -257,6 +307,7 @@ impl MapUpdateClient {
             .http
             .post(PRELOADED_MAP_UPDATES_URL)
             .header("Accept-Language", detect_accept_language())
+            .header(reqwest::header::ACCEPT, "application/json")
             .json(&req_body)
             .send()
             .await?;
@@ -268,7 +319,55 @@ impl MapUpdateClient {
             });
         }
 
-        let parsed: JsonPreloadedMapUpdatesResponse = resp.json().await?;
+        let body = resp.bytes().await?;
+        // Prefer JSON (what Express expects), but fall back to protobuf decode if server responds that way.
+        let parsed: JsonPreloadedMapUpdatesResponse = match serde_json::from_slice(&body) {
+            Ok(v) => v,
+            Err(json_err) => {
+                if let Ok(pb) = proto::PreloadedMapUpdatesResponse::decode(body.as_ref()) {
+                    JsonPreloadedMapUpdatesResponse {
+                        auto_check_settings: pb
+                            .auto_check_settings
+                            .map(|s| JsonAutoCheckSettings {
+                                is_auto_check_enabled: s.is_auto_check_enabled,
+                            }),
+                        map_updates: Some(
+                            pb.map_updates
+                                .into_iter()
+                                .map(|u| JsonMapUpdateInfo {
+                                    product_key: Some(u.product_key),
+                                    is_reinstall: u.is_reinstall,
+                                    part_number: Some(u.part_number),
+                                    update_type: u.update_type,
+                                    major_version: u.major_version,
+                                    minor_version: u.minor_version,
+                                    product_group: Some(u.product_group),
+                                    display_name: Some(u.display_name),
+                                    eula_url: Some(u.eula_url),
+                                    can_auto_start_download: u.can_auto_start_download,
+                                    release_notes: Some(u.release_notes),
+                                })
+                                .collect(),
+                        ),
+                        purchasable_products: Some(
+                            pb.purchasable_products
+                                .into_iter()
+                                .map(serde_json::Value::String)
+                                .collect(),
+                        ),
+                    }
+                } else {
+                    let snippet = String::from_utf8_lossy(&body);
+                    return Err(AppError::Api {
+                        status: 200,
+                        message: format!(
+                            "error decoding response body (not JSON/protobuf): {json_err}; body starts: {}",
+                            snippet.chars().take(400).collect::<String>()
+                        ),
+                    });
+                }
+            }
+        };
         Ok((display.serial_number, parsed))
     }
 
