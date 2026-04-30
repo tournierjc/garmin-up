@@ -4,6 +4,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use prost::Message;
+use tracing::warn;
 
 use crate::error::AppError;
 
@@ -760,6 +761,11 @@ impl MapInstaller {
         let garmin_dir = device_mount.join("GARMIN");
         tokio::fs::create_dir_all(&garmin_dir).await?;
 
+        // Safety: quarantine removals before writing new payloads.
+        // Garmin Express uses FilesToRemove / *ToReplace hints; we only act on explicit filenames and
+        // only within GARMIN/ to avoid destructive behavior.
+        Self::quarantine_files_to_remove(details, &garmin_dir).await?;
+
         let host = details
             .download_hosts
             .as_ref()
@@ -787,6 +793,76 @@ impl MapInstaller {
         }
 
         Ok(installed)
+    }
+
+    async fn quarantine_files_to_remove(
+        details: &JsonDownloadedDetailsResponse,
+        garmin_dir: &Path,
+    ) -> Result<(), AppError> {
+        let mut removals: Vec<&JsonFileToRemove> = Vec::new();
+        removals.extend(details.files_to_remove.iter());
+
+        // Some payloads include per-content replacement hints.
+        let mut stack: Vec<&JsonDeliverableContent> = details.available_contents.iter().collect();
+        while let Some(content) = stack.pop() {
+            if let Some(f) = content.content_to_replace.as_ref() {
+                removals.push(f);
+            }
+            removals.extend(content.extra_contents_to_replace.iter());
+
+            for c in &content.additional_content {
+                stack.push(c);
+            }
+            for c in &content.extra_contents {
+                stack.push(c);
+            }
+            for c in &content.smaller_content_options {
+                stack.push(c);
+            }
+        }
+
+        if removals.is_empty() {
+            return Ok(());
+        }
+
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let quarantine_dir = garmin_dir.join(".garmin-up-trash").join(ts.to_string());
+        tokio::fs::create_dir_all(&quarantine_dir).await?;
+
+        for r in removals {
+            if !r.is_file_name {
+                continue;
+            }
+            let ident = r.identifier.trim();
+            if ident.is_empty() {
+                continue;
+            }
+
+            // Reject any identifier that looks like a path. We only accept plain filenames.
+            if ident.contains('/') || ident.contains('\\') || ident.contains("..") {
+                warn!("Refusing to remove suspicious identifier: {ident}");
+                continue;
+            }
+
+            let src = garmin_dir.join(ident);
+            if !src.is_file() {
+                continue;
+            }
+
+            let dst = quarantine_dir.join(ident);
+            if let Err(err) = tokio::fs::rename(&src, &dst).await {
+                // Fallback if rename fails (e.g., cross-device): copy then remove.
+                warn!("rename failed for {} -> {}: {err}", src.display(), dst.display());
+                let bytes = tokio::fs::read(&src).await?;
+                tokio::fs::write(&dst, bytes).await?;
+                let _ = tokio::fs::remove_file(&src).await;
+            }
+        }
+
+        Ok(())
     }
 
     async fn download_urls_json(
