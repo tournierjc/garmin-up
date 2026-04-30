@@ -5,6 +5,7 @@ import { BackupPage } from "./pages/BackupPage";
 import { SyncPage } from "./pages/SyncPage";
 import { UpdatesPage } from "./pages/UpdatesPage";
 import { MusicPage } from "./pages/MusicPage";
+import { ConnectIQPage } from "./pages/ConnectIQPage";
 import { useDevices } from "./hooks/useDevices";
 import type { Page } from "./types";
 import "./App.css";
@@ -28,6 +29,7 @@ function App() {
         {activePage === "sync" && <SyncPage />}
         {activePage === "updates" && <UpdatesPage devices={devices} />}
         {activePage === "music" && <MusicPage devices={devices} />}
+        {activePage === "connectiq" && <ConnectIQPage devices={devices} />}
       </main>
     </div>
   );
