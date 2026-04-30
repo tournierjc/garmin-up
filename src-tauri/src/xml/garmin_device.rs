@@ -43,6 +43,34 @@ pub struct Unlock {
 pub struct MassStorageMode {
     #[serde(alias = "DataType", default)]
     pub data_types: Vec<DataType>,
+
+    // Present on many devices; used by Garmin Express for map update requests.
+    #[serde(alias = "UpdateFile", default)]
+    pub update_files: Vec<UpdateFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateFile {
+    #[serde(alias = "FileName")]
+    pub file_name: String,
+
+    #[serde(alias = "PartNumber")]
+    pub part_number: String,
+
+    #[serde(alias = "Path")]
+    pub path: String,
+
+    #[serde(alias = "Version")]
+    pub version: UpdateFileVersion,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateFileVersion {
+    #[serde(alias = "Major")]
+    pub major: i32,
+
+    #[serde(alias = "Minor")]
+    pub minor: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

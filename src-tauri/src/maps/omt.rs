@@ -111,6 +111,150 @@ pub struct JsonPreloadedMapUpdatesResponse {
     pub purchasable_products: Option<Vec<serde_json::Value>>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonUnitUpdateFile {
+    #[serde(rename = "FileName")]
+    pub file_name: String,
+    #[serde(rename = "MajorVersion")]
+    pub major_version: i32,
+    #[serde(rename = "MinorVersion")]
+    pub minor_version: i32,
+    #[serde(rename = "PartNumber")]
+    pub part_number: String,
+    #[serde(rename = "Path")]
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonUnitDataTypeLocation {
+    #[serde(rename = "BaseName")]
+    pub base_name: String,
+    #[serde(rename = "Extension")]
+    pub extension: String,
+    #[serde(rename = "Path")]
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonUnitDataType {
+    #[serde(rename = "Name")]
+    pub name: String,
+    #[serde(rename = "Locations")]
+    pub locations: Vec<JsonUnitDataTypeLocation>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonFullUnitInfo {
+    #[serde(rename = "UnitId")]
+    pub unit_id: i64,
+    #[serde(rename = "FirstFix", skip_serializing_if = "Option::is_none")]
+    pub first_fix: Option<i64>,
+    #[serde(rename = "SerialNumber", skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
+    #[serde(rename = "SoftwarePartNumber")]
+    pub software_part_number: String,
+    #[serde(rename = "SoftwareVersion")]
+    pub software_version: String,
+    #[serde(rename = "UpdateFiles")]
+    pub update_files: Vec<JsonUnitUpdateFile>,
+    #[serde(rename = "DataTypes")]
+    pub data_types: Vec<JsonUnitDataType>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonDownloadDetailsRequest {
+    #[serde(rename = "ClientInfo")]
+    pub client_info: JsonClientInfo,
+    #[serde(rename = "FullUnitInfo")]
+    pub full_unit_info: JsonFullUnitInfo,
+    #[serde(rename = "PartNumber")]
+    pub part_number: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonDownloadHosts {
+    #[serde(rename = "ForegroundPrimaryHost")]
+    pub foreground_primary_host: String,
+    #[serde(rename = "BackgroundPrimaryHost")]
+    pub background_primary_host: String,
+    #[serde(rename = "FailoverHosts", default)]
+    pub failover_hosts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonUrlDto {
+    #[serde(rename = "Type")]
+    pub r#type: i32,
+    #[serde(rename = "Url")]
+    pub url: String,
+    #[serde(rename = "Md5", default)]
+    pub md5: Option<String>,
+    #[serde(rename = "Size", default)]
+    pub size: Option<i64>,
+    #[serde(rename = "IsRelative")]
+    pub is_relative: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonFileToRemove {
+    #[serde(rename = "Identifier")]
+    pub identifier: String,
+    #[serde(rename = "IsFileName")]
+    pub is_file_name: bool,
+    #[serde(rename = "SizeInBytes")]
+    pub size_in_bytes: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonDeliverableContent {
+    #[serde(rename = "AdditionalContent", default)]
+    pub additional_content: Vec<JsonDeliverableContent>,
+    #[serde(rename = "ContentToReplace", default)]
+    pub content_to_replace: Option<JsonFileToRemove>,
+    #[serde(rename = "ContentType", default)]
+    pub content_type: Option<String>,
+    #[serde(rename = "DisplayName", default)]
+    pub display_name: Option<String>,
+    #[serde(rename = "ExtraContents", default)]
+    pub extra_contents: Vec<JsonDeliverableContent>,
+    #[serde(rename = "ExtraContentsToReplace", default)]
+    pub extra_contents_to_replace: Vec<JsonFileToRemove>,
+    #[serde(rename = "Gma", default)]
+    pub gma: Option<Vec<u8>>,
+    #[serde(rename = "Id")]
+    pub id: i32,
+    #[serde(rename = "IsPackage")]
+    pub is_package: bool,
+    #[serde(rename = "IsRecommended")]
+    pub is_recommended: bool,
+    #[serde(rename = "IsReinstallOnly")]
+    pub is_reinstall_only: bool,
+    #[serde(rename = "Locale", default)]
+    pub locale: Option<String>,
+    #[serde(rename = "PartNumber", default)]
+    pub part_number: Option<String>,
+    #[serde(rename = "PartNumberToReplace", default)]
+    pub part_number_to_replace: Option<String>,
+    #[serde(rename = "SmallerContentOptions", default)]
+    pub smaller_content_options: Vec<JsonDeliverableContent>,
+    #[serde(rename = "UnlockCode", default)]
+    pub unlock_code: Option<String>,
+    #[serde(rename = "Urls", default)]
+    pub urls: Vec<JsonUrlDto>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonDownloadedDetailsResponse {
+    #[serde(rename = "FilesToRemove", default)]
+    pub files_to_remove: Vec<JsonFileToRemove>,
+    #[serde(rename = "AvailableContents", default)]
+    pub available_contents: Vec<JsonDeliverableContent>,
+    #[serde(rename = "ComputerInstallUrl", default)]
+    pub computer_install_url: Option<String>,
+    #[serde(rename = "DownloadHosts", default)]
+    pub download_hosts: Option<JsonDownloadHosts>,
+}
+
 pub struct MapUpdateClient {
     http: Client,
 }
@@ -453,6 +597,38 @@ impl MapUpdateClient {
         let parsed = proto::DownloadDetailsResponse::decode(body.as_ref())?;
         Ok(parsed)
     }
+
+    pub async fn get_download_details_json(
+        &self,
+        full_unit_info: JsonFullUnitInfo,
+        part_number: &str,
+    ) -> Result<JsonDownloadedDetailsResponse, AppError> {
+        let locale = detect_accept_language().replace('-', "_");
+        let req_body = JsonDownloadDetailsRequest {
+            client_info: JsonClientInfo { locale_code: locale },
+            full_unit_info,
+            part_number: part_number.to_string(),
+        };
+
+        let resp = self
+            .http
+            .post(DOWNLOAD_DETAILS_URL)
+            .header("Accept-Language", detect_accept_language())
+            .header(reqwest::header::ACCEPT, "application/json")
+            .json(&req_body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(AppError::Api {
+                status: resp.status().as_u16(),
+                message: resp.text().await.unwrap_or_default(),
+            });
+        }
+
+        let body = resp.bytes().await?;
+        serde_json::from_slice(&body).map_err(AppError::Json)
+    }
 }
 
 fn parse_unit_id(unit_id: &str) -> i64 {
@@ -574,6 +750,74 @@ impl MapInstaller {
             installed.push(dest);
         }
 
+        Ok(())
+    }
+
+    pub async fn install_download_details_json_to_device(
+        details: &JsonDownloadedDetailsResponse,
+        device_mount: &Path,
+    ) -> Result<Vec<PathBuf>, AppError> {
+        let garmin_dir = device_mount.join("GARMIN");
+        tokio::fs::create_dir_all(&garmin_dir).await?;
+
+        let host = details
+            .download_hosts
+            .as_ref()
+            .map(|h| h.foreground_primary_host.as_str())
+            .unwrap_or("https://worldwide.omtmapupdate.garmin.com");
+
+        let client = Client::builder()
+            .user_agent("Garmin Express/7.28.0")
+            .build()?;
+
+        let mut installed = Vec::new();
+        let mut stack: Vec<&JsonDeliverableContent> = details.available_contents.iter().collect();
+        while let Some(content) = stack.pop() {
+            Self::download_urls_json(&client, host, &content.urls, &garmin_dir, &mut installed)
+                .await?;
+            for c in &content.additional_content {
+                stack.push(c);
+            }
+            for c in &content.extra_contents {
+                stack.push(c);
+            }
+            for c in &content.smaller_content_options {
+                stack.push(c);
+            }
+        }
+
+        Ok(installed)
+    }
+
+    async fn download_urls_json(
+        http: &Client,
+        host: &str,
+        urls: &[JsonUrlDto],
+        garmin_dir: &Path,
+        installed: &mut Vec<PathBuf>,
+    ) -> Result<(), AppError> {
+        for u in urls {
+            if !u.is_relative {
+                continue;
+            }
+            let url = format!("{host}/{}", u.url.trim_start_matches('/'));
+            let resp = http.get(&url).send().await?;
+            if !resp.status().is_success() {
+                return Err(AppError::Api {
+                    status: resp.status().as_u16(),
+                    message: format!("Failed to download {url}"),
+                });
+            }
+
+            let bytes = resp.bytes().await?;
+            let file_name = Path::new(&u.url)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| AppError::Other(format!("Invalid URL filename: {}", u.url)))?;
+            let dest = garmin_dir.join(file_name);
+            tokio::fs::write(&dest, &bytes).await?;
+            installed.push(dest);
+        }
         Ok(())
     }
 }

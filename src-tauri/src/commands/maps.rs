@@ -4,6 +4,7 @@ use tauri::State;
 use crate::device::DeviceState;
 use crate::error::AppError;
 use crate::maps::omt::{MapInstaller, MapUpdateClient};
+use crate::xml::garmin_device;
 use crate::maps::scanner::{self, InstalledMap};
 use serde::Serialize;
 
@@ -184,24 +185,54 @@ pub async fn download_and_install_map_update(
 
     let mount = PathBuf::from(&device.mount_path);
 
-    // Needed to build a DownloadDetailsRequest
-    let serial = MapUpdateClient::new()?
-        .get_unit_serial_number(&device.unit_id, &device.part_number)
-        .await?;
+    // Match Garmin Express: GetDownloadDetails uses JSON body with FullUnitInfo derived from GarminDevice.xml.
+    let xml_path = mount.join("GARMIN").join("GarminDevice.xml");
+    let parsed = garmin_device::parse_file(&xml_path)?;
+
+    let full_unit_info = crate::maps::omt::JsonFullUnitInfo {
+        unit_id: parsed.id.parse::<i64>().unwrap_or(0),
+        first_fix: None,
+        serial_number: None,
+        software_part_number: parsed.model.part_number.clone(),
+        software_version: parsed.model.software_version.clone(),
+        update_files: parsed
+            .mass_storage_mode
+            .update_files
+            .into_iter()
+            .map(|u| crate::maps::omt::JsonUnitUpdateFile {
+                file_name: u.file_name,
+                major_version: u.version.major,
+                minor_version: u.version.minor,
+                part_number: u.part_number,
+                path: u.path,
+            })
+            .collect(),
+        data_types: parsed
+            .mass_storage_mode
+            .data_types
+            .into_iter()
+            .map(|dt| crate::maps::omt::JsonUnitDataType {
+                name: dt.name,
+                locations: dt
+                    .files
+                    .into_iter()
+                    .map(|f| crate::maps::omt::JsonUnitDataTypeLocation {
+                        base_name: f.location.base_name.unwrap_or_default(),
+                        extension: f.location.file_extension,
+                        path: f.location.path,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    };
 
     let details = MapUpdateClient::new()?
-        .get_download_details(
-            &device.unit_id,
-            &serial,
-            &device.part_number,
-            &device.software_version,
-            &part_number,
-        )
+        .get_download_details_json(full_unit_info, &part_number)
         .await?;
 
     drop(devices);
 
-    let installed = MapInstaller::install_download_details_to_device(&details, &mount).await?;
+    let installed = MapInstaller::install_download_details_json_to_device(&details, &mount).await?;
     Ok(installed
         .into_iter()
         .map(|p| p.display().to_string())

@@ -36,7 +36,8 @@ interface UpdatesPageProps {
 
 export function UpdatesPage({ devices }: UpdatesPageProps) {
   const [checking, setChecking] = useState(false);
-  const [installing, setInstalling] = useState(false);
+  const [installingFirmwareUnit, setInstallingFirmwareUnit] = useState<string | null>(null);
+  const [installingMapKey, setInstallingMapKey] = useState<string | null>(null);
   const [firmwareInfo, setFirmwareInfo] = useState<Record<string, FirmwareInfo>>({});
   const [mapUpdates, setMapUpdates] = useState<Record<string, MapUpdateSummary[]>>({});
   const [mapDebug, setMapDebug] = useState<Record<string, MapUpdatesDebug>>({});
@@ -71,7 +72,7 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
   }
 
   async function handleInstall(unitId: string, downloadUrl: string) {
-    setInstalling(true);
+    setInstallingFirmwareUnit(unitId);
     setError(null);
     try {
       await invoke("install_firmware", { unitId, downloadUrl });
@@ -83,12 +84,13 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
     } catch (err) {
       setError(String(err));
     } finally {
-      setInstalling(false);
+      setInstallingFirmwareUnit(null);
     }
   }
 
   async function handleInstallMap(unitId: string, partNumber: string) {
-    setInstalling(true);
+    const key = `${unitId}:${partNumber}`;
+    setInstallingMapKey(key);
     setError(null);
     try {
       await invoke<string[]>("download_and_install_map_update", { unitId, partNumber });
@@ -98,7 +100,7 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
     } catch (err) {
       setError(String(err));
     } finally {
-      setInstalling(false);
+      setInstallingMapKey(null);
     }
   }
 
@@ -147,9 +149,9 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
                   <button
                     className="btn btn-accent"
                     onClick={() => handleInstall(device.unit_id, info.download_url!)}
-                    disabled={installing}
+                    disabled={installingFirmwareUnit !== null || installingMapKey !== null}
                   >
-                    {installing ? "Installing…" : "Install Update"}
+                    {installingFirmwareUnit === device.unit_id ? "Installing…" : "Install Update"}
                   </button>
                 ) : info && !info.update_available ? (
                   <span className="text-secondary">Up to date</span>
@@ -185,9 +187,9 @@ export function UpdatesPage({ devices }: UpdatesPageProps) {
                         <button
                           className="btn btn-accent"
                           onClick={() => handleInstallMap(device.unit_id, m.part_number)}
-                          disabled={installing}
+                          disabled={installingFirmwareUnit !== null || installingMapKey !== null}
                         >
-                          {installing ? "Installing…" : "Install"}
+                          {installingMapKey === `${device.unit_id}:${m.part_number}` ? "Installing…" : "Install"}
                         </button>
                       </div>
                     ))}
