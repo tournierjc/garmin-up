@@ -5,6 +5,7 @@ const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
   { id: "backup", label: "Backup", icon: "💾" },
   { id: "sync", label: "Sync", icon: "🔄" },
   { id: "updates", label: "Updates", icon: "⬆" },
+  { id: "music", label: "Music", icon: "🎵" },
 ];
 
 interface SidebarProps {

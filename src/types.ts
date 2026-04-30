@@ -35,4 +35,4 @@ export interface ConnectDeviceInfo {
   firmware_version: string | null;
 }
 
-export type Page = "devices" | "backup" | "sync" | "updates";
+export type Page = "devices" | "backup" | "sync" | "updates" | "music";

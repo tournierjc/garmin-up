@@ -21,6 +21,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(device::DeviceState::default())
         .manage(commands::connect::ConnectState::default())
         .setup(|app| {
@@ -49,6 +50,7 @@ pub fn run() {
             commands::maps::check_map_updates,
             commands::maps::check_map_updates_debug,
             commands::maps::download_and_install_map_update,
+            commands::music::install_music_files,
             commands::connectiq::list_iq_apps,
             commands::connectiq::install_iq_app,
             commands::connectiq::remove_iq_app,

@@ -4,3 +4,4 @@ pub mod connect;
 pub mod connectiq;
 pub mod firmware;
 pub mod maps;
+pub mod music;
