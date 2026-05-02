@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use tauri::State;
 
-use crate::device::{resolve_garmin_volume_dir, DeviceState};
+use crate::device::{device_fs, resolve_garmin_volume_dir, join_uri_leaf, DeviceState};
 use crate::error::AppError;
 use crate::maps::omt::{MapInstaller, MapUpdateClient};
 use crate::xml::garmin_device;
@@ -74,9 +74,10 @@ pub async fn check_map_updates(
     let client = MapUpdateClient::new()?;
     let mount = PathBuf::from(&device.mount_path);
     let device_xml = match resolve_garmin_volume_dir(&mount) {
-        Some(vol) => tokio::fs::read_to_string(vol.join("GarminDevice.xml"))
-            .await
-            .ok(),
+        Some(vol) => {
+            let xml_path = join_uri_leaf(&vol, "GarminDevice.xml");
+            device_fs::read_to_string(&xml_path).await.ok()
+        }
         None => None,
     };
 
@@ -117,9 +118,10 @@ pub async fn check_map_updates_debug(
     let client = MapUpdateClient::new()?;
     let mount = PathBuf::from(&device.mount_path);
     let device_xml = match resolve_garmin_volume_dir(&mount) {
-        Some(vol) => tokio::fs::read_to_string(vol.join("GarminDevice.xml"))
-            .await
-            .ok(),
+        Some(vol) => {
+            let xml_path = join_uri_leaf(&vol, "GarminDevice.xml");
+            device_fs::read_to_string(&xml_path).await.ok()
+        }
         None => None,
     };
 
@@ -199,7 +201,7 @@ pub async fn download_and_install_map_update(
                 mount.display()
             ))
         })?;
-    let xml_path = garmin_vol.join("GarminDevice.xml");
+    let xml_path = join_uri_leaf(&garmin_vol, "GarminDevice.xml");
     let parsed = garmin_device::parse_file(&xml_path)?;
 
     let full_unit_info = crate::maps::omt::JsonFullUnitInfo {

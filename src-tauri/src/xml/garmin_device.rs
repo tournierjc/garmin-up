@@ -120,6 +120,15 @@ pub enum TransferDirection {
 }
 
 pub fn parse_file(path: &Path) -> Result<GarminDevice, AppError> {
+    #[cfg(target_os = "linux")]
+    {
+        let s = path.to_string_lossy();
+        if s.starts_with("mtp:") {
+            let xml = crate::device::kio::cat_utf8(&s, crate::device::kio::KIO_FAST_TIMEOUT)
+                .map_err(AppError::Other)?;
+            return parse_str(&xml);
+        }
+    }
     let content = std::fs::read_to_string(path)?;
     parse_str(&content)
 }

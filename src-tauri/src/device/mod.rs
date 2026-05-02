@@ -1,7 +1,12 @@
+#[cfg(target_os = "linux")]
+pub mod kio;
+
+pub mod device_fs;
 pub mod detector;
 pub mod monitor;
 
 pub use detector::resolve_garmin_volume_dir;
+pub use device_fs::join_uri_leaf;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

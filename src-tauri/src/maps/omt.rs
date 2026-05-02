@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use prost::Message;
 use tracing::warn;
 
+use crate::device::device_fs;
 use crate::device::resolve_garmin_volume_dir;
 use crate::error::AppError;
 
@@ -752,7 +753,7 @@ impl MapInstaller {
                 .and_then(|n| n.to_str())
                 .ok_or_else(|| AppError::Other(format!("Invalid URL filename: {}", u.url)))?;
             let dest = garmin_dir.join(file_name);
-            tokio::fs::write(&dest, &bytes).await?;
+            device_fs::write_bytes(&dest, &bytes).await?;
             installed.push(dest);
         }
 
@@ -838,8 +839,10 @@ impl MapInstaller {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let quarantine_dir = garmin_dir.join(".garmin-up-trash").join(ts.to_string());
-        tokio::fs::create_dir_all(&quarantine_dir).await?;
+        let trash_root = crate::device::join_uri_leaf(garmin_dir, ".garmin-up-trash");
+        device_fs::create_dir(&trash_root).await?;
+        let quarantine_dir = crate::device::join_uri_leaf(&trash_root, &ts.to_string());
+        device_fs::create_dir(&quarantine_dir).await?;
 
         for r in removals {
             if !r.is_file_name {
@@ -857,17 +860,16 @@ impl MapInstaller {
             }
 
             let src = garmin_dir.join(ident);
-            if !src.is_file() {
-                continue;
-            }
-
             let dst = quarantine_dir.join(ident);
-            if let Err(err) = tokio::fs::rename(&src, &dst).await {
-                // Fallback if rename fails (e.g., cross-device): copy then remove.
-                warn!("rename failed for {} -> {}: {err}", src.display(), dst.display());
-                let bytes = tokio::fs::read(&src).await?;
-                tokio::fs::write(&dst, bytes).await?;
-                let _ = tokio::fs::remove_file(&src).await;
+
+            if let Err(err) = device_fs::rename_move(&src, &dst).await {
+                warn!("rename/move failed for {} -> {}: {err}", src.display(), dst.display());
+                let Ok(bytes) = device_fs::read_bytes(&src).await else {
+                    continue;
+                };
+                if device_fs::write_bytes(&dst, &bytes).await.is_ok() {
+                    let _ = device_fs::remove_file(&src).await;
+                }
             }
         }
 
@@ -900,7 +902,7 @@ impl MapInstaller {
                 .and_then(|n| n.to_str())
                 .ok_or_else(|| AppError::Other(format!("Invalid URL filename: {}", u.url)))?;
             let dest = garmin_dir.join(file_name);
-            tokio::fs::write(&dest, &bytes).await?;
+            device_fs::write_bytes(&dest, &bytes).await?;
             installed.push(dest);
         }
         Ok(())

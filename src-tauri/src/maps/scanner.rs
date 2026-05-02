@@ -1,8 +1,9 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use serde::Serialize;
 use tokio::fs;
 
-use crate::device::resolve_garmin_volume_dir;
+use crate::device::{device_fs, resolve_garmin_volume_dir};
 use crate::error::AppError;
 
 const MAP_FILES: &[&str] = &[
@@ -37,10 +38,25 @@ pub async fn scan_installed_maps(device_mount: &Path) -> Result<Vec<InstalledMap
     };
     let mut maps = Vec::new();
 
+    let entries = device_fs::read_dir_filenames(&garmin_dir).await?;
+
+    let map_set_lc: HashSet<String> =
+        MAP_FILES.iter().map(|s| (*s).to_lowercase()).collect();
+
     for map_file in MAP_FILES {
-        let path = garmin_dir.join(map_file);
-        if path.exists() {
-            let metadata = fs::metadata(&path).await?;
+        if let Some(found) = entries
+            .iter()
+            .find(|e| e.eq_ignore_ascii_case(map_file))
+        {
+            let path = garmin_dir.join(found);
+            let size = if device_fs::is_kio_uri(&path) {
+                0
+            } else if path.exists() {
+                fs::metadata(&path).await?.len()
+            } else {
+                0
+            };
+
             let map_type = match *map_file {
                 "gmapprom.img" => MapType::Base,
                 "gmapsupp.img" => MapType::Supplemental,
@@ -50,24 +66,27 @@ pub async fn scan_installed_maps(device_mount: &Path) -> Result<Vec<InstalledMap
                 _ => MapType::Unknown,
             };
             maps.push(InstalledMap {
-                file_name: map_file.to_string(),
+                file_name: found.clone(),
                 path,
-                size: metadata.len(),
+                size,
                 map_type,
             });
         }
     }
 
-    let mut entries = fs::read_dir(&garmin_dir).await?;
-    while let Some(entry) = entries.next_entry().await? {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy().to_lowercase();
-        if name_str.ends_with(".img") && !MAP_FILES.contains(&name_str.as_str()) {
-            let metadata = entry.metadata().await?;
+    for name in &entries {
+        let lc = name.to_lowercase();
+        if lc.ends_with(".img") && !map_set_lc.contains(&lc) {
+            let path = garmin_dir.join(name);
+            let size = if device_fs::is_kio_uri(&path) {
+                0
+            } else {
+                fs::metadata(&path).await?.len()
+            };
             maps.push(InstalledMap {
-                file_name: name.to_string_lossy().to_string(),
-                path: entry.path(),
-                size: metadata.len(),
+                file_name: name.clone(),
+                path,
+                size,
                 map_type: MapType::Unknown,
             });
         }
@@ -88,14 +107,20 @@ pub async fn install_map(
         ))
     })?;
     let dest = garmin_dir.join(file_name);
-    fs::create_dir_all(&garmin_dir).await?;
-    fs::copy(source, &dest).await?;
 
-    let metadata = fs::metadata(&dest).await?;
+    device_fs::create_dir(&garmin_dir).await?;
+    device_fs::copy_local_to(source, &dest).await?;
+
+    let size = if device_fs::is_kio_uri(&dest) {
+        0
+    } else {
+        fs::metadata(&dest).await?.len()
+    };
+
     Ok(InstalledMap {
         file_name: file_name.to_string(),
         path: dest,
-        size: metadata.len(),
+        size,
         map_type: MapType::Supplemental,
     })
 }
@@ -105,8 +130,7 @@ pub async fn remove_map(device_mount: &Path, file_name: &str) -> Result<(), AppE
         return Ok(());
     };
     let path = garmin_dir.join(file_name);
-    if path.exists() {
-        fs::remove_file(&path).await?;
-    }
+
+    device_fs::remove_file(&path).await?;
     Ok(())
 }

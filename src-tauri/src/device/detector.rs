@@ -6,9 +6,24 @@ use tracing::{debug, info};
 use super::DetectedDevice;
 use crate::xml::garmin_device;
 
-/// Mass-storage Garmin folder at the USB mount root: `GARMIN/` or `Garmin/` depending on device/host.
-/// Linux mounts are usually case-sensitive, so callers must use this rather than assuming `GARMIN`.
+/// Mass-storage Garmin folder at the USB mount root: `GARMIN/` or `Garmin/` depending on device/host,
+/// or KDE MTP URIs (`mtp:/…`) probed via `kioclient` (not visible to `std::fs`).
 pub fn resolve_garmin_volume_dir(device_mount: &Path) -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let root = device_mount.to_string_lossy();
+        if root.starts_with("mtp:") {
+            let base = root.trim_end_matches('/');
+            for name in ["GARMIN", "Garmin"] {
+                let probe = format!("{base}/{name}/GarminDevice.xml");
+                if crate::device::kio::cat_utf8(&probe, crate::device::kio::KIO_FAST_TIMEOUT).is_ok() {
+                    return Some(PathBuf::from(format!("{base}/{name}")));
+                }
+            }
+            return None;
+        }
+    }
+
     for garmin_dir_name in ["GARMIN", "Garmin"] {
         let garmin_dir = device_mount.join(garmin_dir_name);
         if garmin_dir.is_dir() {
@@ -67,7 +82,7 @@ pub fn scan_for_devices() -> Vec<DetectedDevice> {
 
 #[cfg(target_os = "linux")]
 fn scan_kio_mtp_devices(devices: &mut Vec<DetectedDevice>) {
-    let device_names = match kio_ls("mtp:/") {
+    let device_names = match crate::device::kio::ls("mtp:/", crate::device::kio::KIO_FAST_TIMEOUT) {
         Ok(names) => names,
         Err(err) => {
             debug!("No KIO MTP devices available: {err}");
@@ -79,7 +94,7 @@ fn scan_kio_mtp_devices(devices: &mut Vec<DetectedDevice>) {
         let device_root = format!("mtp:/{device_name}/");
         let mut candidate_roots = vec![device_root.clone()];
 
-        if let Ok(storage_roots) = kio_ls(&device_root) {
+        if let Ok(storage_roots) = crate::device::kio::ls(&device_root, crate::device::kio::KIO_FAST_TIMEOUT) {
             candidate_roots.extend(
                 storage_roots
                     .into_iter()
@@ -100,7 +115,7 @@ fn try_add_kio_device(root_uri: &str, devices: &mut Vec<DetectedDevice>) -> bool
     for garmin_dir_name in ["GARMIN", "Garmin"] {
         let xml_uri = format!("{root_uri}{garmin_dir_name}/GarminDevice.xml");
 
-        let xml_content = match kio_cat(&xml_uri) {
+        let xml_content = match crate::device::kio::cat_utf8(&xml_uri, crate::device::kio::KIO_FAST_TIMEOUT) {
             Ok(content) => content,
             Err(_) => continue,
         };
@@ -131,113 +146,6 @@ fn try_add_kio_device(root_uri: &str, devices: &mut Vec<DetectedDevice>) -> bool
     false
 }
 
-#[cfg(target_os = "linux")]
-fn kio_ls(uri: &str) -> Result<Vec<String>, String> {
-    let output = run_kioclient(["ls", uri])?;
-    Ok(parse_kioclient_ls_entries(&output))
-}
-
-#[cfg(target_os = "linux")]
-fn kio_cat(uri: &str) -> Result<String, String> {
-    run_kioclient(["cat", uri])
-}
-
-#[cfg(target_os = "linux")]
-const KIOCLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-#[cfg(target_os = "linux")]
-fn spawn_and_wait_with_timeout(
-    program: &str,
-    args: &[&str],
-    timeout: std::time::Duration,
-) -> std::io::Result<std::process::Output> {
-    use std::io::Read;
-    use std::process::Stdio;
-    use std::sync::mpsc;
-    use std::thread;
-
-    let mut child = std::process::Command::new(program)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    let mut stdout_pipe = child.stdout.take().expect("stdout was piped");
-    let mut stderr_pipe = child.stderr.take().expect("stderr was piped");
-
-    let (tx, rx) = mpsc::channel::<(Vec<u8>, Vec<u8>)>();
-    thread::spawn(move || {
-        let mut out = Vec::new();
-        let mut err_buf = Vec::new();
-        let _ = stdout_pipe.read_to_end(&mut out);
-        let _ = stderr_pipe.read_to_end(&mut err_buf);
-        let _ = tx.send((out, err_buf));
-    });
-
-    match rx.recv_timeout(timeout) {
-        Ok((stdout, stderr)) => {
-            let status = child.wait()?;
-            Ok(std::process::Output { status, stdout, stderr })
-        }
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("process timed out after {}s", timeout.as_secs()),
-            ))
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "output thread disconnected unexpectedly",
-            ))
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn run_kioclient<const N: usize>(args: [&str; N]) -> Result<String, String> {
-    let mut last_error = None;
-
-    for program in ["kioclient5", "kioclient"] {
-        let output = match spawn_and_wait_with_timeout(program, &args, KIOCLIENT_TIMEOUT) {
-            Ok(output) => output,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(err) => {
-                last_error = Some(format!("{program} failed: {err}"));
-                continue;
-            }
-        };
-
-        if output.status.success() {
-            return String::from_utf8(output.stdout)
-                .map_err(|err| format!("{program} produced non-UTF8 output: {err}"));
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        last_error = Some(if stderr.trim().is_empty() {
-            format!("{program} {:?} failed with status {}", args, output.status)
-        } else {
-            format!("{program} {:?} failed: {}", args, stderr.trim())
-        });
-    }
-
-    Err(last_error.unwrap_or_else(|| "kioclient is unavailable".to_string()))
-}
-
-#[cfg(target_os = "linux")]
-fn parse_kioclient_ls_entries(output: &str) -> Vec<String> {
-    output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && *line != ".")
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
 fn scan_garmin_data_dir(_devices: &mut Vec<DetectedDevice>) {
     let data_dir = dirs_garmin_data();
     if !data_dir.is_dir() {
@@ -263,33 +171,4 @@ fn dirs_home() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/tmp"))
-}
-
-#[cfg(all(test, target_os = "linux"))]
-mod tests {
-    use super::{parse_kioclient_ls_entries, spawn_and_wait_with_timeout};
-    use std::time::Duration;
-
-    #[test]
-    fn parses_kioclient_listing_output() {
-        let output = ".\nfenix 6 Pro\n\nEdge 1040\n";
-        let entries = parse_kioclient_ls_entries(output);
-        assert_eq!(entries, vec!["fenix 6 Pro", "Edge 1040"]);
-    }
-
-    #[test]
-    fn timeout_helper_succeeds_for_fast_command() {
-        let output = spawn_and_wait_with_timeout("echo", &["hello"], Duration::from_secs(5))
-            .expect("echo should succeed within timeout");
-        assert!(output.status.success());
-        let stdout = String::from_utf8(output.stdout).unwrap();
-        assert_eq!(stdout.trim(), "hello");
-    }
-
-    #[test]
-    fn timeout_helper_times_out_for_slow_command() {
-        let err = spawn_and_wait_with_timeout("sleep", &["10"], Duration::from_millis(100))
-            .expect_err("sleep 10 should be killed by the 100 ms timeout");
-        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
-    }
 }

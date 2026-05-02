@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use tauri::State;
 
-use crate::device::{resolve_garmin_volume_dir, DeviceState};
+use crate::device::{device_fs, resolve_garmin_volume_dir, DeviceState};
 use crate::error::AppError;
 
 fn sanitize_file_name(file_name: &str) -> Option<&str> {
@@ -24,7 +24,7 @@ async fn ensure_music_dir(mount: &Path) -> Result<PathBuf, AppError> {
         ))
     })?;
     let garmin_music = garmin.join("MUSIC");
-    tokio::fs::create_dir_all(&garmin_music).await?;
+    device_fs::create_dir(&garmin_music).await?;
     Ok(garmin_music)
 }
 
@@ -55,7 +55,7 @@ pub async fn install_music_files(
             .ok_or_else(|| AppError::Other(format!("Invalid music file name: {src}")))?;
 
         let dest = dest_dir.join(file_name);
-        tokio::fs::copy(&src_path, &dest).await?;
+        device_fs::copy_local_to(&src_path, &dest).await?;
         installed.push(dest.display().to_string());
     }
 
