@@ -15,6 +15,54 @@ pub const KIO_FAST_TIMEOUT: Duration = Duration::from_secs(15);
 /// Large map / firmware payloads over MTP can be slow.
 pub const KIO_COPY_TIMEOUT: Duration = Duration::from_secs(900);
 
+/// `kioclient` misparses `mtp:/My Device/foo` (spaces) and tries a local POSIX path like `/My Device/...`.
+/// Percent-encode each path segment (` ` → `%20`) while leaving `mtp:` intact.
+pub fn normalize_kio_mtp_uri(uri: &str) -> String {
+    let t = uri.trim();
+    let lower = t.to_ascii_lowercase();
+    // Slice **`t`**, not `lower`, so `fenix 6 Pro / Primary` casing is preserved in percent-encoding.
+    let after_scheme = if lower.starts_with("mtp://") {
+        &t["mtp://".len()..]
+    } else if lower.starts_with("mtp:") {
+        &t["mtp:".len()..]
+    } else {
+        return t.to_string();
+    };
+    let body = after_scheme.trim_start_matches('/');
+
+    if body.is_empty() {
+        return "mtp:/".to_string();
+    }
+    // Trust already-encoded KDE URLs (would double-encode `%` otherwise).
+    if body.contains('%') {
+        format!("mtp:/{body}")
+    } else {
+        let encoded = body
+            .split('/')
+            .map(percent_encode_path_segment)
+            .collect::<Vec<_>>()
+            .join("/");
+        format!("mtp:/{encoded}")
+    }
+}
+
+fn percent_encode_path_segment(seg: &str) -> String {
+    let mut out = String::with_capacity(seg.len().saturating_mul(3));
+    for c in seg.chars() {
+        match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '.' | '_' | '~' => out.push(c),
+            _ => {
+                let mut buf = [0_u8; 4];
+                for &byte in c.encode_utf8(&mut buf).as_bytes() {
+                    out.push('%');
+                    out.push_str(&format!("{byte:02X}"));
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn parse_ls_entries(output: &str) -> Vec<String> {
     output
         .lines()
@@ -121,7 +169,8 @@ pub fn run_program_for_tests(
 
 /// List directory contents (file names).
 pub fn ls(uri: &str, timeout: Duration) -> Result<Vec<String>, String> {
-    let out = run_kioclient_first_success(&["ls", uri], timeout)?;
+    let uri = normalize_kio_mtp_uri(uri);
+    let out = run_kioclient_first_success(&["ls", uri.as_str()], timeout)?;
     Ok(parse_ls_entries(
         std::str::from_utf8(&out).map_err(|e| format!("non-UTF8 ls output: {e}"))?,
     ))
@@ -135,21 +184,29 @@ pub fn cat_utf8(uri: &str, timeout: Duration) -> Result<String, String> {
 
 /// Raw bytes (updates, binaries).
 pub fn cat_bytes(uri: &str, timeout: Duration) -> Result<Vec<u8>, String> {
-    run_kioclient_first_success(&["cat", uri], timeout)
+    let uri = normalize_kio_mtp_uri(uri);
+    run_kioclient_first_success(&["cat", uri.as_str()], timeout)
 }
 
 pub fn mkdir(uri: &str, timeout: Duration) -> Result<(), String> {
-    run_kioclient_first_success(&["mkdir", uri], timeout)?;
+    let uri = normalize_kio_mtp_uri(uri);
+    run_kioclient_first_success(&["mkdir", uri.as_str()], timeout)?;
     Ok(())
 }
 
 pub fn remove(uri: &str, timeout: Duration) -> Result<(), String> {
-    run_kioclient_first_success(&["remove", uri], timeout)?;
+    let uri = normalize_kio_mtp_uri(uri);
+    run_kioclient_first_success(&["remove", uri.as_str()], timeout)?;
     Ok(())
 }
 
 pub fn move_url(from: &str, to: &str, timeout: Duration) -> Result<(), String> {
-    run_kioclient_first_success(&["move", "--overwrite", from, to], timeout)?;
+    let from = normalize_kio_mtp_uri(from);
+    let to = normalize_kio_mtp_uri(to);
+    run_kioclient_first_success(
+        &["move", "--overwrite", from.as_str(), to.as_str()],
+        timeout,
+    )?;
     Ok(())
 }
 
@@ -164,13 +221,14 @@ pub fn file_url(abs: &Path) -> Result<String, String> {
 /// Copy **from local filesystem** onto an `mtp:/…` (or other) destination URL.
 pub fn copy_overwrite(local_file: &Path, dest_remote_uri: &str, timeout: Duration) -> Result<(), String> {
     let fu = file_url(local_file)?;
+    let dest = normalize_kio_mtp_uri(dest_remote_uri);
     run_kioclient_first_success(
         &[
             "--overwrite",
             "--noninteractive",
             "copy",
             fu.as_str(),
-            dest_remote_uri,
+            dest.as_str(),
         ],
         timeout,
     )?;
@@ -179,8 +237,17 @@ pub fn copy_overwrite(local_file: &Path, dest_remote_uri: &str, timeout: Duratio
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests_spawn {
-    use super::{parse_ls_entries, run_program_for_tests};
+    use super::{normalize_kio_mtp_uri, parse_ls_entries, run_program_for_tests};
     use std::time::Duration;
+
+    #[test]
+    fn mtp_uri_escapes_spaces_per_segment() {
+        assert_eq!(
+            normalize_kio_mtp_uri("mtp:/fenix 6 Pro/Primary/GARMIN/.garmin-up-trash"),
+            "mtp:/fenix%206%20Pro/Primary/GARMIN/.garmin-up-trash"
+        );
+        assert_eq!(normalize_kio_mtp_uri("mtp:/"), "mtp:/");
+    }
 
     #[test]
     fn parses_ls_output() {

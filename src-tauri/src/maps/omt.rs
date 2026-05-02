@@ -7,6 +7,7 @@ use prost::Message;
 use tracing::warn;
 
 use crate::device::device_fs;
+use crate::device::join_uri_leaf;
 use crate::device::resolve_garmin_volume_dir;
 use crate::error::AppError;
 
@@ -699,10 +700,17 @@ impl MapInstaller {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let trash_root = crate::device::join_uri_leaf(garmin_dir, ".garmin-up-trash");
-        device_fs::create_dir(&trash_root).await?;
-        let quarantine_dir = crate::device::join_uri_leaf(&trash_root, &ts.to_string());
-        device_fs::create_dir(&quarantine_dir).await?;
+        // MTP: `kioclient mkdir` on nested `.garmin-up-trash/<ts>/` often fails; use flat names in GARMIN/.
+        let flat_mtp_quarantine = device_fs::is_kio_uri(garmin_dir);
+        let quarantine_dir = if flat_mtp_quarantine {
+            garmin_dir.to_path_buf()
+        } else {
+            let trash_root = join_uri_leaf(garmin_dir, ".garmin-up-trash");
+            device_fs::create_dir(&trash_root).await?;
+            let nested = join_uri_leaf(&trash_root, &ts.to_string());
+            device_fs::create_dir(&nested).await?;
+            nested
+        };
 
         for r in removals {
             if !r.is_file_name {
@@ -720,7 +728,11 @@ impl MapInstaller {
             }
 
             let src = garmin_dir.join(ident);
-            let dst = quarantine_dir.join(ident);
+            let dst = if flat_mtp_quarantine {
+                garmin_dir.join(format!(".garmin-up-trash.{ts}.{ident}"))
+            } else {
+                quarantine_dir.join(ident)
+            };
 
             if let Err(err) = device_fs::rename_move(&src, &dst).await {
                 warn!("rename/move failed for {} -> {}: {err}", src.display(), dst.display());
