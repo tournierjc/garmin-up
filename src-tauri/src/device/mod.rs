@@ -1,6 +1,8 @@
 pub mod detector;
 pub mod monitor;
 
+pub use detector::resolve_garmin_volume_dir;
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::sync::Mutex;

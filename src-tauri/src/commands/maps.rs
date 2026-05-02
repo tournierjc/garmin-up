@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use tauri::State;
 
-use crate::device::DeviceState;
+use crate::device::{resolve_garmin_volume_dir, DeviceState};
 use crate::error::AppError;
 use crate::maps::omt::{MapInstaller, MapUpdateClient};
 use crate::xml::garmin_device;
@@ -72,10 +72,13 @@ pub async fn check_map_updates(
 
     // Match Garmin Express: JSON request body to /Rce/ProtobufApi/MapUpdateService/GetPreloadedMapUpdates
     let client = MapUpdateClient::new()?;
-    let device_xml_path = PathBuf::from(&device.mount_path)
-        .join("GARMIN")
-        .join("GarminDevice.xml");
-    let device_xml = tokio::fs::read_to_string(&device_xml_path).await.ok();
+    let mount = PathBuf::from(&device.mount_path);
+    let device_xml = match resolve_garmin_volume_dir(&mount) {
+        Some(vol) => tokio::fs::read_to_string(vol.join("GarminDevice.xml"))
+            .await
+            .ok(),
+        None => None,
+    };
 
     let resp = client
         .get_preloaded_map_updates_json(&device.unit_id, &device.part_number, device_xml)
@@ -112,10 +115,13 @@ pub async fn check_map_updates_debug(
         .ok_or_else(|| AppError::DeviceNotFound(unit_id.clone()))?;
 
     let client = MapUpdateClient::new()?;
-    let device_xml_path = PathBuf::from(&device.mount_path)
-        .join("GARMIN")
-        .join("GarminDevice.xml");
-    let device_xml = tokio::fs::read_to_string(&device_xml_path).await.ok();
+    let mount = PathBuf::from(&device.mount_path);
+    let device_xml = match resolve_garmin_volume_dir(&mount) {
+        Some(vol) => tokio::fs::read_to_string(vol.join("GarminDevice.xml"))
+            .await
+            .ok(),
+        None => None,
+    };
 
     let json = client
         .get_preloaded_map_updates_json(&device.unit_id, &device.part_number, device_xml)
@@ -186,7 +192,14 @@ pub async fn download_and_install_map_update(
     let mount = PathBuf::from(&device.mount_path);
 
     // Match Garmin Express: GetDownloadDetails uses JSON body with FullUnitInfo derived from GarminDevice.xml.
-    let xml_path = mount.join("GARMIN").join("GarminDevice.xml");
+    let garmin_vol =
+        resolve_garmin_volume_dir(&mount).ok_or_else(|| {
+            AppError::Other(format!(
+                "Device mount has neither GARMIN nor Garmin folder: {}",
+                mount.display()
+            ))
+        })?;
+    let xml_path = garmin_vol.join("GarminDevice.xml");
     let parsed = garmin_device::parse_file(&xml_path)?;
 
     let full_unit_info = crate::maps::omt::JsonFullUnitInfo {

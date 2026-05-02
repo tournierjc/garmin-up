@@ -2,11 +2,8 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use tokio::fs;
 
+use crate::device::resolve_garmin_volume_dir;
 use crate::error::AppError;
-
-const IQ_APPS_DIR: &str = "Garmin/Apps";
-#[allow(dead_code)]
-const IQ_WATCHFACES_DIR: &str = "Garmin/Apps";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InstalledApp {
@@ -27,7 +24,10 @@ pub enum AppType {
 }
 
 pub async fn scan_installed_apps(device_mount: &Path) -> Result<Vec<InstalledApp>, AppError> {
-    let apps_dir = device_mount.join(IQ_APPS_DIR);
+    let Some(garmin) = resolve_garmin_volume_dir(device_mount) else {
+        return Ok(Vec::new());
+    };
+    let apps_dir = garmin.join("Apps");
     let mut apps = Vec::new();
 
     if !apps_dir.exists() {
@@ -60,19 +60,24 @@ pub async fn scan_installed_apps(device_mount: &Path) -> Result<Vec<InstalledApp
 }
 
 pub async fn remove_app(device_mount: &Path, file_name: &str) -> Result<(), AppError> {
-    let path = device_mount.join(IQ_APPS_DIR).join(file_name);
+    let Some(garmin) = resolve_garmin_volume_dir(device_mount) else {
+        return Ok(());
+    };
+    let apps = garmin.join("Apps");
+
+    let path = apps.join(file_name);
     if path.exists() {
         fs::remove_file(&path).await?;
     }
 
     let settings_name = file_name.replace(".prg", ".set").replace(".PRG", ".SET");
-    let settings_path = device_mount.join("Garmin/Apps/SETTINGS").join(&settings_name);
+    let settings_path = apps.join("SETTINGS").join(&settings_name);
     if settings_path.exists() {
         fs::remove_file(&settings_path).await?;
     }
 
     let data_name = file_name.replace(".prg", ".dat").replace(".PRG", ".DAT");
-    let data_path = device_mount.join("Garmin/Apps/DATA").join(&data_name);
+    let data_path = apps.join("DATA").join(&data_name);
     if data_path.exists() {
         fs::remove_file(&data_path).await?;
     }
@@ -85,7 +90,13 @@ pub async fn install_app(
     device_mount: &Path,
     file_name: &str,
 ) -> Result<InstalledApp, AppError> {
-    let dest_dir = device_mount.join(IQ_APPS_DIR);
+    let garmin = resolve_garmin_volume_dir(device_mount).ok_or_else(|| {
+        AppError::Other(format!(
+            "Device mount has neither GARMIN nor Garmin folder: {}",
+            device_mount.display()
+        ))
+    })?;
+    let dest_dir = garmin.join("Apps");
     fs::create_dir_all(&dest_dir).await?;
 
     let dest = dest_dir.join(file_name);

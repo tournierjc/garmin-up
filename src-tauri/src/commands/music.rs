@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use tauri::State;
 
-use crate::device::DeviceState;
+use crate::device::{resolve_garmin_volume_dir, DeviceState};
 use crate::error::AppError;
 
 fn sanitize_file_name(file_name: &str) -> Option<&str> {
@@ -17,8 +17,13 @@ fn sanitize_file_name(file_name: &str) -> Option<&str> {
 }
 
 async fn ensure_music_dir(mount: &Path) -> Result<PathBuf, AppError> {
-    // Most Garmin mass-storage devices use GARMIN/MUSIC.
-    let garmin_music = mount.join("GARMIN").join("MUSIC");
+    let garmin = resolve_garmin_volume_dir(mount).ok_or_else(|| {
+        AppError::Other(format!(
+            "Device mount has neither GARMIN nor Garmin folder: {}",
+            mount.display()
+        ))
+    })?;
+    let garmin_music = garmin.join("MUSIC");
     tokio::fs::create_dir_all(&garmin_music).await?;
     Ok(garmin_music)
 }

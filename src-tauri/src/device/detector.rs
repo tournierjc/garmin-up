@@ -1,10 +1,22 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use sysinfo::Disks;
 use tracing::{debug, info};
 
 use super::DetectedDevice;
 use crate::xml::garmin_device;
+
+/// Mass-storage Garmin folder at the USB mount root: `GARMIN/` or `Garmin/` depending on device/host.
+/// Linux mounts are usually case-sensitive, so callers must use this rather than assuming `GARMIN`.
+pub fn resolve_garmin_volume_dir(device_mount: &Path) -> Option<PathBuf> {
+    for garmin_dir_name in ["GARMIN", "Garmin"] {
+        let garmin_dir = device_mount.join(garmin_dir_name);
+        if garmin_dir.is_dir() {
+            return Some(garmin_dir);
+        }
+    }
+    None
+}
 
 pub fn scan_for_devices() -> Vec<DetectedDevice> {
     let mut devices = Vec::new();
@@ -14,37 +26,29 @@ pub fn scan_for_devices() -> Vec<DetectedDevice> {
         let mount = disk.mount_point();
         let mut found = false;
 
-        // Some devices (or host OS mounts) expose `GARMIN/` vs `Garmin/`.
-        for garmin_dir_name in ["GARMIN", "Garmin"] {
-            let garmin_dir = mount.join(garmin_dir_name);
-            if !garmin_dir.is_dir() {
-                continue;
-            }
-
-            debug!("Found {garmin_dir_name} directory at {}", mount.display());
+        if let Some(garmin_dir) = resolve_garmin_volume_dir(mount) {
+            debug!("Found Garmin volume at {}", garmin_dir.display());
             let xml_path = garmin_dir.join("GarminDevice.xml");
-            if !xml_path.is_file() {
+            if xml_path.is_file() {
+                match garmin_device::parse_file(&xml_path) {
+                    Ok(device) => {
+                        info!(
+                            "Detected device: {} (ID: {}) at {}",
+                            device.model.description, device.id, mount.display()
+                        );
+                        devices.push(DetectedDevice::from_mount(mount.to_path_buf(), device));
+                        found = true;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to parse GarminDevice.xml at {}: {}",
+                            xml_path.display(),
+                            e
+                        );
+                    }
+                }
+            } else {
                 debug!("No GarminDevice.xml at {}", xml_path.display());
-                continue;
-            }
-
-            match garmin_device::parse_file(&xml_path) {
-                Ok(device) => {
-                    info!(
-                        "Detected device: {} (ID: {}) at {}",
-                        device.model.description, device.id, mount.display()
-                    );
-                    devices.push(DetectedDevice::from_mount(mount.to_path_buf(), device));
-                    found = true;
-                    break;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to parse GarminDevice.xml at {}: {}",
-                        xml_path.display(),
-                        e
-                    );
-                }
             }
         }
 

@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use tokio::fs;
 
+use crate::device::resolve_garmin_volume_dir;
 use crate::error::AppError;
 
 const MAP_FILES: &[&str] = &[
@@ -31,12 +32,10 @@ pub enum MapType {
 }
 
 pub async fn scan_installed_maps(device_mount: &Path) -> Result<Vec<InstalledMap>, AppError> {
-    let garmin_dir = device_mount.join("Garmin");
+    let Some(garmin_dir) = resolve_garmin_volume_dir(device_mount) else {
+        return Ok(Vec::new());
+    };
     let mut maps = Vec::new();
-
-    if !garmin_dir.exists() {
-        return Ok(maps);
-    }
 
     for map_file in MAP_FILES {
         let path = garmin_dir.join(map_file);
@@ -82,8 +81,14 @@ pub async fn install_map(
     device_mount: &Path,
     file_name: &str,
 ) -> Result<InstalledMap, AppError> {
-    let dest = device_mount.join("Garmin").join(file_name);
-    fs::create_dir_all(dest.parent().unwrap()).await?;
+    let garmin_dir = resolve_garmin_volume_dir(device_mount).ok_or_else(|| {
+        AppError::Other(format!(
+            "Device mount has neither GARMIN nor Garmin folder: {}",
+            device_mount.display()
+        ))
+    })?;
+    let dest = garmin_dir.join(file_name);
+    fs::create_dir_all(&garmin_dir).await?;
     fs::copy(source, &dest).await?;
 
     let metadata = fs::metadata(&dest).await?;
@@ -96,7 +101,10 @@ pub async fn install_map(
 }
 
 pub async fn remove_map(device_mount: &Path, file_name: &str) -> Result<(), AppError> {
-    let path = device_mount.join("Garmin").join(file_name);
+    let Some(garmin_dir) = resolve_garmin_volume_dir(device_mount) else {
+        return Ok(());
+    };
+    let path = garmin_dir.join(file_name);
     if path.exists() {
         fs::remove_file(&path).await?;
     }

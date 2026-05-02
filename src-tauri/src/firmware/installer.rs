@@ -1,6 +1,7 @@
 use std::path::Path;
 use tokio::fs;
 
+use crate::device::resolve_garmin_volume_dir;
 use crate::error::AppError;
 use super::checker::{FirmwareChecker, FirmwareInfo};
 
@@ -12,10 +13,14 @@ impl FirmwareInstaller {
         device_mount: &Path,
     ) -> Result<FirmwareInfo, AppError> {
         let checker = FirmwareChecker::new()?;
-        let gupdate_dir = device_mount.join("Garmin");
-        fs::create_dir_all(&gupdate_dir).await?;
+        let garmin_vol = resolve_garmin_volume_dir(device_mount).ok_or_else(|| {
+            AppError::Other(format!(
+                "Device mount has neither GARMIN nor Garmin folder: {}",
+                device_mount.display()
+            ))
+        })?;
 
-        let dest = gupdate_dir.join("gupdate.gcd");
+        let dest = garmin_vol.join("gupdate.gcd");
         checker.download_firmware(firmware_url, &dest).await?;
 
         Ok(FirmwareInfo {

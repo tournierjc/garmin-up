@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use prost::Message;
 use tracing::warn;
 
+use crate::device::resolve_garmin_volume_dir;
 use crate::error::AppError;
 
 pub mod proto {
@@ -692,8 +693,12 @@ impl MapInstaller {
         details: &proto::DownloadDetailsResponse,
         device_mount: &Path,
     ) -> Result<Vec<PathBuf>, AppError> {
-        let garmin_dir = device_mount.join("GARMIN");
-        tokio::fs::create_dir_all(&garmin_dir).await?;
+        let garmin_dir = resolve_garmin_volume_dir(device_mount).ok_or_else(|| {
+            AppError::Other(format!(
+                "Device mount has neither GARMIN nor Garmin folder: {}",
+                device_mount.display()
+            ))
+        })?;
 
         let host = details
             .download_hosts
@@ -758,8 +763,12 @@ impl MapInstaller {
         details: &JsonDownloadedDetailsResponse,
         device_mount: &Path,
     ) -> Result<Vec<PathBuf>, AppError> {
-        let garmin_dir = device_mount.join("GARMIN");
-        tokio::fs::create_dir_all(&garmin_dir).await?;
+        let garmin_dir = resolve_garmin_volume_dir(device_mount).ok_or_else(|| {
+            AppError::Other(format!(
+                "Device mount has neither GARMIN nor Garmin folder: {}",
+                device_mount.display()
+            ))
+        })?;
 
         // Safety: quarantine removals before writing new payloads.
         // Garmin Express uses FilesToRemove / *ToReplace hints; we only act on explicit filenames and
