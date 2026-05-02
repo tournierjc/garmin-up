@@ -1,6 +1,6 @@
 [package]
 name = "garmin-up"
-version = "0.1.18"
+version = "0.1.19"
 description = "Cross-platform Garmin Express replacement"
 authors = ["jct"]
 edition = "2021"
@@ -14,7 +14,7 @@ tauri-build = { version = "2", features = [] }
 prost-build = "0.13"
 
 [dependencies]
-# Tauri
+# Tauri — keep NPM's @tauri-apps/api/cli on same minor line (checked by `tauri build`).
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
