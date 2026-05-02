@@ -276,6 +276,7 @@ impl MapUpdateClient {
         let locale = detect_accept_language();
         let session = uuid::Uuid::new_v4().to_string();
         let http = Client::builder()
+            .cookie_store(true)
             .user_agent("Garmin Express/7.28.0")
             .default_headers({
                 let mut h = reqwest::header::HeaderMap::new();
@@ -326,6 +327,12 @@ impl MapUpdateClient {
             })
             .build()?;
         Ok(Self { http })
+    }
+
+    /// Same HTTP client used for JSON OMT APIs — **must** be reused for CDN map downloads so
+    /// Garmin `Set-Cookie` / auth headers (`Garmin-Client-*`) match Express behavior (403 otherwise).
+    pub fn http(&self) -> &Client {
+        &self.http
     }
 
     #[cfg(test)]
@@ -612,7 +619,9 @@ fn detect_accept_language() -> String {
 pub struct MapInstaller;
 
 impl MapInstaller {
+    /// `http`: use [`MapUpdateClient::http`] from the client that fetched `details` so cookies match.
     pub async fn install_download_details_json_to_device(
+        http: &Client,
         details: &JsonDownloadedDetailsResponse,
         device_mount: &Path,
     ) -> Result<Vec<PathBuf>, AppError> {
@@ -638,15 +647,10 @@ impl MapInstaller {
             })
             .unwrap_or(MAP_OTM_DEFAULT_HOST);
 
-        let client = Client::builder()
-            .user_agent("Garmin Express/7.28.0")
-            .build()?;
-
         let mut installed = Vec::new();
         let mut stack: Vec<&JsonDeliverableContent> = details.available_contents.iter().collect();
         while let Some(content) = stack.pop() {
-            Self::download_urls_json(&client, host, &content.urls, &garmin_dir, &mut installed)
-                .await?;
+            Self::download_urls_json(http, host, &content.urls, &garmin_dir, &mut installed).await?;
             for c in &content.additional_content {
                 stack.push(c);
             }
@@ -739,12 +743,23 @@ impl MapInstaller {
         garmin_dir: &Path,
         installed: &mut Vec<PathBuf>,
     ) -> Result<(), AppError> {
+        /// Many CDNs deny hotlinking without Express context.
+        const OMT_DOWNLOAD_REFERER: &str = "https://omt.garmin.com/";
+
         for u in urls {
-            if !u.is_relative {
+            let url = if u.url.starts_with("https://") || u.url.starts_with("http://") {
+                u.url.clone()
+            } else if !u.is_relative {
                 continue;
-            }
-            let url = format!("{host}/{}", u.url.trim_start_matches('/'));
-            let resp = http.get(&url).send().await?;
+            } else {
+                format!("{}/{}", host.trim_end_matches('/'), u.url.trim_start_matches('/'))
+            };
+
+            let req = http
+                .get(&url)
+                .header(reqwest::header::REFERER, OMT_DOWNLOAD_REFERER);
+
+            let resp = req.send().await?;
             if !resp.status().is_success() {
                 return Err(AppError::Api {
                     status: resp.status().as_u16(),

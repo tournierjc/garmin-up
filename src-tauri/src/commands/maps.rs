@@ -230,13 +230,16 @@ pub async fn download_and_install_map_update(
             .collect(),
     };
 
-    let details = MapUpdateClient::new()?
+    let client = MapUpdateClient::new()?;
+    let details = client
         .get_download_details_json(full_unit_info, &part_number)
         .await?;
 
     drop(devices);
 
-    let installed = MapInstaller::install_download_details_json_to_device(&details, &mount).await?;
+    let installed =
+        MapInstaller::install_download_details_json_to_device(client.http(), &details, &mount)
+            .await?;
     Ok(installed
         .into_iter()
         .map(|p| p.display().to_string())
