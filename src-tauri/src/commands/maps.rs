@@ -156,17 +156,6 @@ pub struct MapUpdateSummary {
 }
 
 impl MapUpdateSummary {
-    fn from_proto(u: crate::maps::omt::proto::MapUpdateInfo) -> Self {
-        Self {
-            product_group: u.product_group,
-            display_name: u.display_name,
-            version: format!("{}.{}", u.major_version, u.minor_version),
-            part_number: u.part_number,
-            update_type: u.update_type,
-            can_auto_start_download: u.can_auto_start_download,
-        }
-    }
-
     fn from_json(u: crate::maps::omt::JsonMapUpdateInfo) -> Self {
         Self {
             product_group: u.product_group.unwrap_or_default(),
