@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tracing::{debug, info, warn};
 
+use crate::device::device_fs;
 use crate::device::DetectedDevice;
 use crate::error::AppError;
 use crate::xml::garmin_device::TransferDirection;
@@ -73,25 +74,37 @@ impl BackupManager {
                 fs::create_dir_all(parent).await?;
             }
 
-            let src_meta = match fs::metadata(&file_entry.source).await {
-                Ok(m) => m,
-                Err(e) => {
-                    warn!("Skipping {}: {}", file_entry.source.display(), e);
-                    continue;
+            let source_kio = device_fs::is_kio_uri(&file_entry.source);
+            let should_copy = if source_kio {
+                match fs::metadata(&dest).await {
+                    Ok(dest_meta) => file_entry.size != dest_meta.len(),
+                    Err(_) => true,
                 }
-            };
-
-            let should_copy = match fs::metadata(&dest).await {
-                Ok(dest_meta) => {
-                    src_meta.len() != dest_meta.len()
-                        || src_meta.modified().ok() != dest_meta.modified().ok()
+            } else {
+                let src_meta = match fs::metadata(&file_entry.source).await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        warn!("Skipping {}: {}", file_entry.source.display(), e);
+                        continue;
+                    }
+                };
+                match fs::metadata(&dest).await {
+                    Ok(dest_meta) => {
+                        src_meta.len() != dest_meta.len()
+                            || src_meta.modified().ok() != dest_meta.modified().ok()
+                    }
+                    Err(_) => true,
                 }
-                Err(_) => true,
             };
 
             if should_copy {
                 debug!("Copying {} -> {}", file_entry.source.display(), dest.display());
-                fs::copy(&file_entry.source, &dest).await?;
+                if source_kio {
+                    let bytes = device_fs::read_bytes(&file_entry.source).await?;
+                    fs::write(&dest, &bytes).await?;
+                } else {
+                    fs::copy(&file_entry.source, &dest).await?;
+                }
             } else {
                 debug!("Skipping (unchanged) {}", file_entry.source.display());
             }
@@ -158,13 +171,20 @@ impl BackupManager {
         let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
 
         for file_entry in &files_to_restore {
-            let dest = device.mount_path.join(&file_entry.relative_dest);
-            if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent).await?;
-            }
+            let rel = pathbuf_as_posix_slash(&file_entry.relative_dest);
+            let dest = device_fs::join_device_relative(&device.mount_path, &rel);
 
-            debug!("Restoring {} -> {}", file_entry.source.display(), dest.display());
-            fs::copy(&file_entry.source, &dest).await?;
+            if device_fs::is_kio_uri(&dest) {
+                device_fs::ensure_parent_dirs(&dest).await?;
+                debug!("Restoring {} -> {}", file_entry.source.display(), dest.display());
+                device_fs::copy_local_to(&file_entry.source, &dest).await?;
+            } else {
+                if let Some(parent) = dest.parent() {
+                    fs::create_dir_all(parent).await?;
+                }
+                debug!("Restoring {} -> {}", file_entry.source.display(), dest.display());
+                fs::copy(&file_entry.source, &dest).await?;
+            }
 
             copied_files += 1;
             copied_bytes += file_entry.size;
@@ -205,6 +225,7 @@ impl BackupManager {
         device: &DetectedDevice,
     ) -> Result<Vec<FileEntry>, AppError> {
         let mut entries = Vec::new();
+        let kio_mount = device_fs::is_kio_uri(&device.mount_path);
 
         for data_type in &device.data_types {
             for file_spec in &data_type.files {
@@ -216,11 +237,17 @@ impl BackupManager {
                     continue;
                 }
 
-                let device_dir = device
-                    .mount_path
-                    .join(&file_spec.location.path);
+                let device_dir = if kio_mount {
+                    device_fs::join_device_relative(&device.mount_path, &file_spec.location.path)
+                } else {
+                    device.mount_path.join(&file_spec.location.path)
+                };
 
-                if !device_dir.is_dir() {
+                if kio_mount {
+                    if device_fs::read_dir_filenames(&device_dir).await.is_err() {
+                        continue;
+                    }
+                } else if !device_dir.is_dir() {
                     continue;
                 }
 
@@ -230,8 +257,23 @@ impl BackupManager {
                 match &file_spec.location.base_name {
                     Some(base_name) => {
                         let filename = format!("{}.{}", base_name, ext);
-                        let src = device_dir.join(&filename);
-                        if src.is_file() {
+                        let src = if kio_mount {
+                            device_fs::join_uri_leaf(&device_dir, &filename)
+                        } else {
+                            device_dir.join(&filename)
+                        };
+                        if kio_mount {
+                            if !device_fs::file_exists_case_insensitive(&device_dir, &filename).await
+                            {
+                                continue;
+                            }
+                            let size = device_fs::read_bytes(&src).await.map(|b| b.len() as u64).unwrap_or(0);
+                            entries.push(FileEntry {
+                                source: src,
+                                relative_dest: PathBuf::from(&fit_type_dir).join(&filename),
+                                size,
+                            });
+                        } else if src.is_file() {
                             let size = std::fs::metadata(&src)
                                 .map(|m| m.len())
                                 .unwrap_or(0);
@@ -243,7 +285,21 @@ impl BackupManager {
                         }
                     }
                     None => {
-                        if let Ok(mut read_dir) = fs::read_dir(&device_dir).await {
+                        if kio_mount {
+                            for fname in device_fs::read_dir_filenames(&device_dir).await? {
+                                let lc = fname.to_lowercase();
+                                if !lc.ends_with(&format!(".{ext}")) {
+                                    continue;
+                                }
+                                let src = device_fs::join_uri_leaf(&device_dir, &fname);
+                                let size = device_fs::read_bytes(&src).await.map(|b| b.len() as u64).unwrap_or(0);
+                                entries.push(FileEntry {
+                                    source: src,
+                                    relative_dest: PathBuf::from(&fit_type_dir).join(&fname),
+                                    size,
+                                });
+                            }
+                        } else if let Ok(mut read_dir) = fs::read_dir(&device_dir).await {
                             while let Ok(Some(entry)) = read_dir.next_entry().await {
                                 let path = entry.path();
                                 let matches_ext = path
@@ -318,6 +374,14 @@ struct FileEntry {
     source: PathBuf,
     relative_dest: PathBuf,
     size: u64,
+}
+
+/// Stable `/` form for joining onto `mtp:/…` via [`device_fs::join_device_relative`].
+fn pathbuf_as_posix_slash(pb: &Path) -> String {
+    pb.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn fit_type_dir_name(data_type_name: &str) -> String {

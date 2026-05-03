@@ -27,7 +27,7 @@ pub async fn scan_installed_apps(device_mount: &Path) -> Result<Vec<InstalledApp
     let Some(garmin) = resolve_garmin_volume_dir(device_mount) else {
         return Ok(Vec::new());
     };
-    let apps_dir = garmin.join("Apps");
+    let apps_dir = device_fs::join_uri_leaf(&garmin, "Apps");
     let mut apps = Vec::new();
 
     let names = match device_fs::read_dir_filenames(&apps_dir).await {
@@ -38,7 +38,7 @@ pub async fn scan_installed_apps(device_mount: &Path) -> Result<Vec<InstalledApp
     for fnm in names {
         let lc = fnm.to_lowercase();
         if lc.ends_with(".prg") {
-            let path = apps_dir.join(&fnm);
+            let path = device_fs::join_uri_leaf(&apps_dir, &fnm);
             let size = if device_fs::is_kio_uri(&path) {
                 0
             } else {
@@ -62,17 +62,21 @@ pub async fn remove_app(device_mount: &Path, file_name: &str) -> Result<(), AppE
     let Some(garmin) = resolve_garmin_volume_dir(device_mount) else {
         return Ok(());
     };
-    let apps = garmin.join("Apps");
+    let apps = device_fs::join_uri_leaf(&garmin, "Apps");
 
-    let path = apps.join(file_name);
+    let path = device_fs::join_uri_leaf(&apps, file_name);
     device_fs::remove_file(&path).await?;
 
     let settings_name = file_name.replace(".prg", ".set").replace(".PRG", ".SET");
-    let settings_path = apps.join("SETTINGS").join(&settings_name);
+    let settings_path = device_fs::join_uri_leaf(
+        &device_fs::join_uri_leaf(&apps, "SETTINGS"),
+        &settings_name,
+    );
     device_fs::remove_file(&settings_path).await?;
 
     let data_name = file_name.replace(".prg", ".dat").replace(".PRG", ".DAT");
-    let data_path = apps.join("DATA").join(&data_name);
+    let data_path =
+        device_fs::join_uri_leaf(&device_fs::join_uri_leaf(&apps, "DATA"), &data_name);
     device_fs::remove_file(&data_path).await?;
 
     Ok(())
@@ -89,10 +93,10 @@ pub async fn install_app(
             device_mount.display()
         ))
     })?;
-    let dest_dir = garmin.join("Apps");
+    let dest_dir = device_fs::join_uri_leaf(&garmin, "Apps");
     device_fs::create_dir(&dest_dir).await?;
 
-    let dest = dest_dir.join(file_name);
+    let dest = device_fs::join_uri_leaf(&dest_dir, file_name);
     device_fs::copy_local_to(source, &dest).await?;
 
     let size = if device_fs::is_kio_uri(&dest) {

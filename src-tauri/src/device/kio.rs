@@ -63,6 +63,16 @@ fn percent_encode_path_segment(seg: &str) -> String {
     out
 }
 
+/// Encode each `/`-separated segment of a relative path (e.g. `Apps/My Watch.prg`) for `mtp:/…` URLs.
+pub fn encode_mtp_relative_path(rel: &str) -> String {
+    rel.trim_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(percent_encode_path_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 pub fn parse_ls_entries(output: &str) -> Vec<String> {
     output
         .lines()
@@ -247,6 +257,15 @@ mod tests_spawn {
             "mtp:/fenix%206%20Pro/Primary/GARMIN/.garmin-up-trash"
         );
         assert_eq!(normalize_kio_mtp_uri("mtp:/"), "mtp:/");
+    }
+
+    #[test]
+    fn encode_mtp_relative_path_encodes_each_segment() {
+        use super::encode_mtp_relative_path;
+        assert_eq!(
+            encode_mtp_relative_path("Apps/My Watch.prg"),
+            "Apps/My%20Watch.prg"
+        );
     }
 
     #[test]

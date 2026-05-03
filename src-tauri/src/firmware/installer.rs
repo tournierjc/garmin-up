@@ -22,7 +22,7 @@ impl FirmwareInstaller {
             ))
         })?;
 
-        let dest = garmin_vol.join("gupdate.gcd");
+        let dest = device_fs::join_uri_leaf(&garmin_vol, "gupdate.gcd");
         let tmp = std::env::temp_dir().join(format!("garmin-up-fw-{}.gcd", Uuid::new_v4()));
 
         checker.download_firmware(firmware_url, &tmp).await?;

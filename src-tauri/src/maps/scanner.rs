@@ -48,7 +48,7 @@ pub async fn scan_installed_maps(device_mount: &Path) -> Result<Vec<InstalledMap
             .iter()
             .find(|e| e.eq_ignore_ascii_case(map_file))
         {
-            let path = garmin_dir.join(found);
+            let path = device_fs::join_uri_leaf(&garmin_dir, found);
             let size = if device_fs::is_kio_uri(&path) {
                 0
             } else if path.exists() {
@@ -77,7 +77,7 @@ pub async fn scan_installed_maps(device_mount: &Path) -> Result<Vec<InstalledMap
     for name in &entries {
         let lc = name.to_lowercase();
         if lc.ends_with(".img") && !map_set_lc.contains(&lc) {
-            let path = garmin_dir.join(name);
+            let path = device_fs::join_uri_leaf(&garmin_dir, name);
             let size = if device_fs::is_kio_uri(&path) {
                 0
             } else {
@@ -106,7 +106,7 @@ pub async fn install_map(
             device_mount.display()
         ))
     })?;
-    let dest = garmin_dir.join(file_name);
+    let dest = device_fs::join_uri_leaf(&garmin_dir, file_name);
 
     device_fs::create_dir(&garmin_dir).await?;
     device_fs::copy_local_to(source, &dest).await?;
@@ -129,7 +129,7 @@ pub async fn remove_map(device_mount: &Path, file_name: &str) -> Result<(), AppE
     let Some(garmin_dir) = resolve_garmin_volume_dir(device_mount) else {
         return Ok(());
     };
-    let path = garmin_dir.join(file_name);
+    let path = device_fs::join_uri_leaf(&garmin_dir, file_name);
 
     device_fs::remove_file(&path).await?;
     Ok(())

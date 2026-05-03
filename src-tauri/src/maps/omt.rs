@@ -798,11 +798,11 @@ impl MapInstaller {
                 continue;
             }
 
-            let src = garmin_dir.join(ident);
+            let src = device_fs::join_uri_leaf(garmin_dir, ident);
             let dst = if flat_mtp_quarantine {
-                garmin_dir.join(format!(".garmin-up-trash.{ts}.{ident}"))
+                device_fs::join_uri_leaf(garmin_dir, &format!(".garmin-up-trash.{ts}.{ident}"))
             } else {
-                quarantine_dir.join(ident)
+                device_fs::join_uri_leaf(&quarantine_dir, ident)
             };
 
             if let Err(err) = device_fs::rename_move(&src, &dst).await {
@@ -856,7 +856,7 @@ impl MapInstaller {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .ok_or_else(|| AppError::Other(format!("Invalid URL filename: {}", u.url)))?;
-            let dest = garmin_dir.join(file_name);
+            let dest = device_fs::join_uri_leaf(garmin_dir, file_name);
             device_fs::write_bytes(&dest, &bytes).await?;
             installed.push(dest);
         }

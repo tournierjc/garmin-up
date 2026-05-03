@@ -4,6 +4,7 @@ use sysinfo::Disks;
 use tracing::{debug, info};
 
 use super::DetectedDevice;
+use super::device_fs::join_uri_leaf;
 use crate::xml::garmin_device;
 
 /// Mass-storage Garmin folder at the USB mount root: `GARMIN/` or `Garmin/` depending on device/host,
@@ -13,11 +14,17 @@ pub fn resolve_garmin_volume_dir(device_mount: &Path) -> Option<PathBuf> {
     {
         let root = device_mount.to_string_lossy();
         if root.starts_with("mtp:") {
-            let base = root.trim_end_matches('/');
+            let base_pb = PathBuf::from(root.trim_end_matches('/'));
             for name in ["GARMIN", "Garmin"] {
-                let probe = format!("{base}/{name}/GarminDevice.xml");
-                if crate::device::kio::cat_utf8(&probe, crate::device::kio::KIO_FAST_TIMEOUT).is_ok() {
-                    return Some(PathBuf::from(format!("{base}/{name}")));
+                let garmin_folder = join_uri_leaf(&base_pb, name);
+                let probe = join_uri_leaf(&garmin_folder, "GarminDevice.xml");
+                if crate::device::kio::cat_utf8(
+                    &probe.to_string_lossy(),
+                    crate::device::kio::KIO_FAST_TIMEOUT,
+                )
+                .is_ok()
+                {
+                    return Some(garmin_folder);
                 }
             }
             return None;
@@ -112,8 +119,11 @@ fn scan_kio_mtp_devices(devices: &mut Vec<DetectedDevice>) {
 
 #[cfg(target_os = "linux")]
 fn try_add_kio_device(root_uri: &str, devices: &mut Vec<DetectedDevice>) -> bool {
+    let root_pb = PathBuf::from(root_uri.trim_end_matches('/'));
     for garmin_dir_name in ["GARMIN", "Garmin"] {
-        let xml_uri = format!("{root_uri}{garmin_dir_name}/GarminDevice.xml");
+        let garmin_folder = join_uri_leaf(&root_pb, garmin_dir_name);
+        let xml_path = join_uri_leaf(&garmin_folder, "GarminDevice.xml");
+        let xml_uri = xml_path.to_string_lossy().into_owned();
 
         let xml_content = match crate::device::kio::cat_utf8(&xml_uri, crate::device::kio::KIO_FAST_TIMEOUT) {
             Ok(content) => content,
