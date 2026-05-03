@@ -28,6 +28,11 @@ const ACTIVATE_MAP_UPDATE_URL: &str =
     "https://omt.garmin.com/Rce/ProtobufApi/MapUpdateService/ActivateMapUpdate";
 
 const MAP_OTM_DEFAULT_HOST: &str = "https://worldwide.omtmapupdate.garmin.com";
+/// Express often resolves relative `rmu/...` against this host (see `DownloadHosts` vs worldwide).
+const MAP_OTM_LEGACY_HOST: &str = "https://omtmapupdate.garmin.com";
+
+/// Browser-like UA for map CDN GETs (Express `DownloadManager` uses a generic `HttpClient`, not `Garmin Express` UA on all builds).
+const MAP_CDN_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 /// Garmin Express `OmtRestClient` headers — attach **only** to `omt.garmin.com` API calls, not map CDN GETs
 /// (some CDNs return 403 if `Garmin-Client-*` is present on `omtmapupdate.garmin.com`).
@@ -94,6 +99,7 @@ fn normalize_map_cdn_origin(s: &str) -> String {
 /// Origins to try when rewriting absolute `omtmapupdate` URLs (403 / geo failover).
 fn map_cdn_origin_candidates(hosts: Option<&JsonDownloadHosts>) -> Vec<String> {
     let mut v = Vec::new();
+    v.push(MAP_OTM_LEGACY_HOST.to_string());
     if let Some(h) = hosts {
         let t = h.foreground_primary_host.trim();
         if !t.is_empty() {
@@ -737,6 +743,60 @@ fn parse_unit_id(unit_id: &str) -> i64 {
     unit_id.parse::<i64>().unwrap_or(0)
 }
 
+/// GET a map payload from `omtmapupdate` / `worldwide.omtmapupdate` CDN.
+///
+/// Plain requests use a Chrome-like `User-Agent` (Express `DownloadManager` is not always
+/// `Garmin Express/…` on the wire). Optional `omt_auth` retries match the second-pass behavior
+/// in [`MapInstaller::download_urls_json`].
+async fn map_cdn_get(
+    http: &Client,
+    url: &str,
+    omt_auth: Option<&HeaderMap>,
+    cookie: Option<&str>,
+) -> Result<Vec<u8>, AppError> {
+    const REFERER: &str = "https://omt.garmin.com/";
+    const ORIGIN: &str = "https://omt.garmin.com";
+    let mut req = http.get(url);
+    if let Some(h) = omt_auth {
+        req = req.headers(h.clone());
+    }
+    if omt_auth.is_none() {
+        req = req.header(reqwest::header::USER_AGENT, MAP_CDN_USER_AGENT);
+    }
+    if let Some(c) = cookie {
+        let c = c.trim();
+        if !c.is_empty() {
+            if let Ok(val) = reqwest::header::HeaderValue::from_str(c) {
+                req = req.header(reqwest::header::COOKIE, val);
+            }
+        }
+    }
+    let resp = req
+        .header(reqwest::header::ACCEPT, "*/*")
+        .header(reqwest::header::REFERER, REFERER)
+        .header(reqwest::header::ORIGIN, ORIGIN)
+        .header("Sec-Fetch-Mode", "no-cors")
+        .header("Sec-Fetch-Site", "cross-site")
+        .header("Sec-Fetch-Dest", "empty")
+        .send()
+        .await
+        .map_err(|e| AppError::Other(format!("GET {url}: {e}")))?;
+    let status = resp.status();
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| AppError::Other(format!("read body {url}: {e}")))?;
+    if !status.is_success() {
+        let preview = String::from_utf8_lossy(&body[..body.len().min(256)]);
+        warn!(%status, %url, preview = %preview, "map CDN GET failed");
+        return Err(AppError::Api {
+            status: status.as_u16(),
+            message: format!("Failed to download {url}"),
+        });
+    }
+    Ok(body.to_vec())
+}
+
 fn detect_accept_language() -> String {
     // Best-effort: derive from LANG (e.g. fr_FR.UTF-8) -> fr-FR.
     let lang = std::env::var("LANG").unwrap_or_else(|_| "en_US".into());
@@ -894,38 +954,6 @@ impl MapInstaller {
         Ok(())
     }
 
-    async fn map_cdn_get(
-        http: &Client,
-        url: &str,
-        omt_auth: Option<&HeaderMap>,
-    ) -> Result<Vec<u8>, AppError> {
-        const REFERER: &str = "https://omt.garmin.com/";
-        const ORIGIN: &str = "https://omt.garmin.com";
-        let mut req = http.get(url);
-        if let Some(h) = omt_auth {
-            req = req.headers(h.clone());
-        }
-        let resp = req
-            .header(reqwest::header::ACCEPT, "*/*")
-            .header(reqwest::header::REFERER, REFERER)
-            .header(reqwest::header::ORIGIN, ORIGIN)
-            .send()
-            .await
-            .map_err(|e| AppError::Other(format!("GET {url}: {e}")))?;
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(AppError::Api {
-                status: status.as_u16(),
-                message: format!("Failed to download {url}"),
-            });
-        }
-        let b = resp
-            .bytes()
-            .await
-            .map_err(|e| AppError::Other(format!("read body {url}: {e}")))?;
-        Ok(b.to_vec())
-    }
-
     async fn download_urls_json(
         http: &Client,
         host: &str,
@@ -979,7 +1007,7 @@ impl MapInstaller {
 
             'fetched: for auth in auth_rounds {
                 for url in &candidates {
-                    match Self::map_cdn_get(http, url, auth).await {
+                    match map_cdn_get(http, url, auth, None).await {
                         Ok(b) => {
                             body = Some(b);
                             break 'fetched;
@@ -1008,6 +1036,7 @@ impl MapInstaller {
 #[cfg(test)]
 mod tests {
     use super::find_map_update_by_part_number;
+    use super::map_cdn_get;
     use super::MapUpdateClient;
     use super::JsonMapUpdateInfo;
     use super::proto;
@@ -1059,6 +1088,12 @@ mod tests {
         bytes.iter().map(|b| format!("{:02x}", b)).collect()
     }
 
+    #[test]
+    fn map_cdn_origin_candidates_legacy_host_first_when_no_download_hosts() {
+        let v = super::map_cdn_origin_candidates(None);
+        assert_eq!(v.first().map(String::as_str), Some(super::MAP_OTM_LEGACY_HOST));
+    }
+
     #[tokio::test]
     async fn can_fetch_preloaded_map_updates_when_env_set() {
         if std::env::var("GARMIN_UP_NETWORK_TESTS").ok().as_deref() != Some("1") {
@@ -1092,6 +1127,49 @@ mod tests {
                 "GARMIN_UP_EXPECT_MAP_UPDATES=1 but map_updates was empty"
             );
         }
+    }
+
+    /// Live map CDN GET (403 without a **fresh** signed URL and often Cloudflare cookies).
+    ///
+    /// Capture a URL from Windows Garmin Express (`ExpressDetailed_*.log` → `GetDownloadDetails`
+    /// `Url` / `IsRelative` lines) immediately before running; URLs expire quickly.
+    ///
+    /// ```text
+    /// export GARMIN_UP_MAP_E2E=1
+    /// export GARMIN_UP_MAP_E2E_URL='https://worldwide.omtmapupdate.garmin.com/rmu/.../file.img'
+    /// # optional: Cookie from DevTools while logged into Garmin / after hitting omt.garmin.com
+    /// export GARMIN_UP_MAP_E2E_COOKIE='__cf_bm=...'
+    /// cargo test -p garmin-up live_map_cdn_download_e2e -- --ignored
+    /// ```
+    ///
+    /// Ignored by default so `cargo test` stays green in CI without secrets.
+    #[tokio::test]
+    #[ignore = "network + fresh URL from Garmin Express; see module rustdoc"]
+    async fn live_map_cdn_download_e2e() {
+        assert_eq!(
+            std::env::var("GARMIN_UP_MAP_E2E").ok().as_deref(),
+            Some("1"),
+            "set GARMIN_UP_MAP_E2E=1 before running with cargo test -- --ignored"
+        );
+        let url = std::env::var("GARMIN_UP_MAP_E2E_URL").expect("GARMIN_UP_MAP_E2E_URL");
+        assert!(!url.trim().is_empty(), "GARMIN_UP_MAP_E2E_URL is empty");
+        let min_bytes: usize = std::env::var("GARMIN_UP_MAP_E2E_MIN_BYTES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1024);
+
+        let client = MapUpdateClient::new().expect("MapUpdateClient::new");
+        let cookie = std::env::var("GARMIN_UP_MAP_E2E_COOKIE").ok();
+
+        let bytes = map_cdn_get(client.http(), &url, None, cookie.as_deref())
+            .await
+            .unwrap_or_else(|e| panic!("map_cdn_get: {e}"));
+
+        assert!(
+            bytes.len() >= min_bytes,
+            "expected at least {min_bytes} bytes, got {}",
+            bytes.len()
+        );
     }
 }
 

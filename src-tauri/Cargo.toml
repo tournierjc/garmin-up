@@ -1,6 +1,6 @@
 [package]
 name = "garmin-up"
-version = "0.1.29"
+version = "0.1.30"
 description = "Cross-platform Garmin Express replacement"
 authors = ["jct"]
 edition = "2021"
@@ -34,9 +34,9 @@ fitparser = "0.10"
 # Device detection
 sysinfo = { version = "0.33", default-features = false, features = ["disk"] }
 
-# HTTP client (Garmin Connect API)
-reqwest = { version = "0.12", features = ["json", "multipart", "cookies", "rustls-tls-native-roots", "gzip"], default-features = false }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# HTTP client — `native-tls` matches Windows Garmin Express (Schannel) / Linux OpenSSL TLS
+# fingerprint better than rustls for some Garmin / Cloudflare edges (map CDN 403).
+reqwest = { version = "0.12", features = ["json", "multipart", "cookies", "native-tls", "gzip"], default-features = false }
 
 # Async runtime
 tokio = { version = "1", features = ["rt", "time", "sync", "fs", "macros"] }

@@ -35,7 +35,7 @@ impl FirmwareChecker {
     pub fn new() -> Result<Self, AppError> {
         let http = Client::builder()
             .user_agent("Garmin Express/7.28.0")
-            // Garmin `www` front-ends are flaky over HTTP/2 with some rustls stacks; match Express-style HTTP/1.1.
+            // Garmin `www` front-ends are flaky over HTTP/2 with some TLS stacks; match Express-style HTTP/1.1.
             .http1_only()
             .connect_timeout(Duration::from_secs(30))
             .timeout(Duration::from_secs(120))
