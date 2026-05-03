@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 
+use reqwest::header::HeaderMap;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use prost::Message;
 use tracing::warn;
+use url::Url;
 
 use crate::device::device_fs;
 use crate::device::join_uri_leaf;
@@ -24,6 +26,104 @@ const DOWNLOAD_DETAILS_URL: &str =
     "https://omt.garmin.com/Rce/ProtobufApi/MapUpdateService/GetDownloadDetails";
 const ACTIVATE_MAP_UPDATE_URL: &str =
     "https://omt.garmin.com/Rce/ProtobufApi/MapUpdateService/ActivateMapUpdate";
+
+const MAP_OTM_DEFAULT_HOST: &str = "https://worldwide.omtmapupdate.garmin.com";
+
+/// Garmin Express `OmtRestClient` headers — attach **only** to `omt.garmin.com` API calls, not map CDN GETs
+/// (some CDNs return 403 if `Garmin-Client-*` is present on `omtmapupdate.garmin.com`).
+fn garmin_omt_api_headers(session_id: &str) -> HeaderMap {
+    let locale = detect_accept_language();
+    let platform_version = std::process::Command::new("uname")
+        .arg("-r")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "0".to_string());
+
+    let mut h = HeaderMap::new();
+    h.insert(
+        "Garmin-Client-Name",
+        reqwest::header::HeaderValue::from_static("express"),
+    );
+    h.insert(
+        "Garmin-Client-Version",
+        reqwest::header::HeaderValue::from_static("7.28.0"),
+    );
+    h.insert(
+        "Garmin-Client-Platform",
+        reqwest::header::HeaderValue::from_static("Linux"),
+    );
+    h.insert(
+        "Garmin-Client-Platform-Version",
+        reqwest::header::HeaderValue::from_str(&platform_version)
+            .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("0")),
+    );
+    h.insert(
+        "Garmin-Client-LocaleCode",
+        reqwest::header::HeaderValue::from_str(&locale)
+            .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("en-US")),
+    );
+    h.insert(
+        "Garmin-Client-SessionId",
+        reqwest::header::HeaderValue::from_str(session_id).unwrap_or_else(|_| {
+            reqwest::header::HeaderValue::from_static("00000000-0000-0000-0000-000000000000")
+        }),
+    );
+    h.insert(
+        reqwest::header::ACCEPT_LANGUAGE,
+        reqwest::header::HeaderValue::from_str(&locale)
+            .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("en-US")),
+    );
+    h
+}
+
+fn normalize_map_cdn_origin(s: &str) -> String {
+    let s = s.trim();
+    if s.starts_with("http://") || s.starts_with("https://") {
+        s.trim_end_matches('/').to_string()
+    } else {
+        format!(
+            "https://{}",
+            s.trim_start_matches('/').trim_end_matches('/')
+        )
+    }
+}
+
+/// Origins to try when rewriting absolute `omtmapupdate` URLs (403 / geo failover).
+fn map_cdn_origin_candidates(hosts: Option<&JsonDownloadHosts>) -> Vec<String> {
+    let mut v = Vec::new();
+    if let Some(h) = hosts {
+        let t = h.foreground_primary_host.trim();
+        if !t.is_empty() {
+            v.push(normalize_map_cdn_origin(t));
+        }
+        for f in &h.failover_hosts {
+            let t = f.trim();
+            if !t.is_empty() {
+                v.push(normalize_map_cdn_origin(t));
+            }
+        }
+    }
+    v.push(MAP_OTM_DEFAULT_HOST.to_string());
+    let mut seen = HashSet::new();
+    v.into_iter().filter(|s| seen.insert(s.clone())).collect()
+}
+
+fn rewrite_map_download_url(original: &str, new_origin_base: &str) -> Option<String> {
+    let o = Url::parse(original).ok()?;
+    let pq = o
+        .query()
+        .map(|q| format!("?{}", q))
+        .unwrap_or_default();
+    Some(format!(
+        "{}{}{}",
+        new_origin_base.trim_end_matches('/'),
+        o.path(),
+        pq
+    ))
+}
 
 #[derive(Debug, Clone, Deserialize)]
 struct UnitInfoResponse {
@@ -304,69 +404,27 @@ pub struct JsonDownloadedDetailsResponse {
 
 pub struct MapUpdateClient {
     http: Client,
+    session_id: String,
 }
 
 impl MapUpdateClient {
     pub fn new() -> Result<Self, AppError> {
-        // Mirror Garmin Express' OmtRestClient default headers as closely as possible.
-        let locale = detect_accept_language();
-        let session = uuid::Uuid::new_v4().to_string();
+        // Cookie jar is shared with map CDN GETs; `Garmin-Client-*` is added per OMT API request only
+        // (see `garmin_omt_api_headers`) so `omtmapupdate` WAFs do not see Express-only headers.
+        let session_id = uuid::Uuid::new_v4().to_string();
         let http = Client::builder()
             .cookie_store(true)
             .user_agent("Garmin Express/7.28.0")
-            .default_headers({
-                let mut h = reqwest::header::HeaderMap::new();
-                h.insert(
-                    "Garmin-Client-Name",
-                    reqwest::header::HeaderValue::from_static("express"),
-                );
-                h.insert(
-                    "Garmin-Client-Version",
-                    reqwest::header::HeaderValue::from_static("7.28.0"),
-                );
-                h.insert(
-                    "Garmin-Client-Platform",
-                    reqwest::header::HeaderValue::from_static("Linux"),
-                );
-                let platform_version = std::process::Command::new("uname")
-                    .arg("-r")
-                    .output()
-                    .ok()
-                    .and_then(|o| String::from_utf8(o.stdout).ok())
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| "0".to_string());
-                h.insert(
-                    "Garmin-Client-Platform-Version",
-                    reqwest::header::HeaderValue::from_str(&platform_version)
-                        .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("0")),
-                );
-                h.insert(
-                    "Garmin-Client-LocaleCode",
-                    reqwest::header::HeaderValue::from_str(&locale)
-                        .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("en-US")),
-                );
-                h.insert(
-                    "Garmin-Client-SessionId",
-                    reqwest::header::HeaderValue::from_str(&session).unwrap_or_else(|_| {
-                        reqwest::header::HeaderValue::from_static(
-                            "00000000-0000-0000-0000-000000000000",
-                        )
-                    }),
-                );
-                h.insert(
-                    reqwest::header::ACCEPT_LANGUAGE,
-                    reqwest::header::HeaderValue::from_str(&locale)
-                        .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("en-US")),
-                );
-                h
-            })
             .build()?;
-        Ok(Self { http })
+        Ok(Self { http, session_id })
     }
 
-    /// Same HTTP client used for JSON OMT APIs — **must** be reused for CDN map downloads so
-    /// Garmin `Set-Cookie` / auth headers (`Garmin-Client-*`) match Express behavior (403 otherwise).
+    fn omt_headers(&self) -> HeaderMap {
+        garmin_omt_api_headers(&self.session_id)
+    }
+
+    /// Same HTTP client used for OMT JSON APIs and map CDN downloads so `Set-Cookie` from OMT applies.
+    /// Map CDN GETs intentionally omit `Garmin-Client-*` (see `download_urls_json`).
     pub fn http(&self) -> &Client {
         &self.http
     }
@@ -384,7 +442,7 @@ impl MapUpdateClient {
         let resp = self
             .http
             .get(url)
-            .header("Accept-Language", detect_accept_language())
+            .headers(self.omt_headers())
             .send()
             .await?;
         if !resp.status().is_success() {
@@ -410,7 +468,7 @@ impl MapUpdateClient {
         let resp = self
             .http
             .get(url)
-            .header("Accept-Language", detect_accept_language())
+            .headers(self.omt_headers())
             .send()
             .await?;
 
@@ -445,9 +503,9 @@ impl MapUpdateClient {
         let resp = self
             .http
             .post(PRELOADED_MAP_UPDATES_URL)
+            .headers(self.omt_headers())
             .header("Content-Type", "application/x-protobuf")
             .header("Accept", "application/x-protobuf")
-            .header("Accept-Language", detect_accept_language())
             .body(bytes)
             .send()
             .await?;
@@ -478,8 +536,9 @@ impl MapUpdateClient {
             .map(|v| v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
-        let locale = detect_accept_language().replace('-', "_");
-        let client_info = JsonClientInfo { locale_code: locale };
+        let client_info = JsonClientInfo {
+            locale_code: detect_accept_language(),
+        };
 
         let basic = JsonBasicUnitInfo {
             unit_id: parse_unit_id(unit_id),
@@ -506,7 +565,7 @@ impl MapUpdateClient {
         let resp = self
             .http
             .post(PRELOADED_MAP_UPDATES_URL)
-            .header("Accept-Language", detect_accept_language())
+            .headers(self.omt_headers())
             .header(reqwest::header::ACCEPT, "application/json")
             .json(&req_body)
             .send()
@@ -576,9 +635,10 @@ impl MapUpdateClient {
         full_unit_info: JsonFullUnitInfo,
         part_number: &str,
     ) -> Result<JsonDownloadedDetailsResponse, AppError> {
-        let locale = detect_accept_language().replace('-', "_");
         let req_body = JsonDownloadDetailsRequest {
-            client_info: JsonClientInfo { locale_code: locale },
+            client_info: JsonClientInfo {
+                locale_code: detect_accept_language(),
+            },
             full_unit_info,
             part_number: part_number.to_string(),
         };
@@ -586,7 +646,7 @@ impl MapUpdateClient {
         let resp = self
             .http
             .post(DOWNLOAD_DETAILS_URL)
-            .header("Accept-Language", detect_accept_language())
+            .headers(self.omt_headers())
             .header(reqwest::header::ACCEPT, "application/json")
             .json(&req_body)
             .send()
@@ -610,9 +670,10 @@ impl MapUpdateClient {
         update_info: &JsonMapUpdateInfo,
         part_numbers_to_install: Vec<String>,
     ) -> Result<(), AppError> {
-        let locale = detect_accept_language().replace('-', "_");
         let req_body = JsonActivateMapUpdateRequest {
-            client_info: JsonClientInfo { locale_code: locale },
+            client_info: JsonClientInfo {
+                locale_code: detect_accept_language(),
+            },
             full_unit_info,
             update_info: update_info.clone(),
             part_numbers_to_install,
@@ -621,7 +682,7 @@ impl MapUpdateClient {
         let resp = self
             .http
             .post(ACTIVATE_MAP_UPDATE_URL)
-            .header("Accept-Language", detect_accept_language())
+            .headers(self.omt_headers())
             .header(reqwest::header::ACCEPT, "application/json")
             .json(&req_body)
             .send()
@@ -709,7 +770,6 @@ impl MapInstaller {
         // only within GARMIN/ to avoid destructive behavior.
         Self::quarantine_files_to_remove(details, &garmin_dir).await?;
 
-        const MAP_OTM_DEFAULT_HOST: &str = "https://worldwide.omtmapupdate.garmin.com";
         let host = details
             .download_hosts
             .as_ref()
@@ -719,10 +779,20 @@ impl MapInstaller {
             })
             .unwrap_or(MAP_OTM_DEFAULT_HOST);
 
+        let cdn_origins = map_cdn_origin_candidates(details.download_hosts.as_ref());
+
         let mut installed = Vec::new();
         let mut stack: Vec<&JsonDeliverableContent> = details.available_contents.iter().collect();
         while let Some(content) = stack.pop() {
-            Self::download_urls_json(http, host, &content.urls, &garmin_dir, &mut installed).await?;
+            Self::download_urls_json(
+                http,
+                host,
+                &cdn_origins,
+                &content.urls,
+                &garmin_dir,
+                &mut installed,
+            )
+            .await?;
             for c in &content.additional_content {
                 stack.push(c);
             }
@@ -822,36 +892,96 @@ impl MapInstaller {
     async fn download_urls_json(
         http: &Client,
         host: &str,
+        cdn_origins: &[String],
         urls: &[JsonUrlDto],
         garmin_dir: &Path,
         installed: &mut Vec<PathBuf>,
     ) -> Result<(), AppError> {
         /// Many CDNs deny hotlinking without Express context.
         const OMT_DOWNLOAD_REFERER: &str = "https://omt.garmin.com/";
+        const OMT_DOWNLOAD_ORIGIN: &str = "https://omt.garmin.com";
 
         for u in urls {
-            let url = if u.url.starts_with("https://") || u.url.starts_with("http://") {
-                u.url.clone()
+            let mut seen = HashSet::<String>::new();
+            let mut candidates: Vec<String> = Vec::new();
+            let mut push = |s: String| {
+                if seen.insert(s.clone()) {
+                    candidates.push(s);
+                }
+            };
+
+            if u.url.starts_with("https://") || u.url.starts_with("http://") {
+                push(u.url.clone());
+                for origin in cdn_origins {
+                    if let Some(rew) = rewrite_map_download_url(&u.url, origin) {
+                        push(rew);
+                    }
+                }
             } else if !u.is_relative {
                 continue;
             } else {
-                format!("{}/{}", host.trim_end_matches('/'), u.url.trim_start_matches('/'))
-            };
-
-            let req = http
-                .get(&url)
-                .header(reqwest::header::ACCEPT, "*/*")
-                .header(reqwest::header::REFERER, OMT_DOWNLOAD_REFERER);
-
-            let resp = req.send().await?;
-            if !resp.status().is_success() {
-                return Err(AppError::Api {
-                    status: resp.status().as_u16(),
-                    message: format!("Failed to download {url}"),
-                });
+                let rel = u.url.trim_start_matches('/');
+                push(format!(
+                    "{}/{}",
+                    host.trim_end_matches('/'),
+                    rel
+                ));
+                for origin in cdn_origins {
+                    push(format!(
+                        "{}/{}",
+                        origin.trim_end_matches('/'),
+                        rel
+                    ));
+                }
             }
 
-            let bytes = resp.bytes().await?;
+            let mut last_err: Option<AppError> = None;
+            let mut body: Option<Vec<u8>> = None;
+            for url in &candidates {
+                let resp = match http
+                    .get(url)
+                    .header(reqwest::header::ACCEPT, "*/*")
+                    .header(reqwest::header::REFERER, OMT_DOWNLOAD_REFERER)
+                    .header(reqwest::header::ORIGIN, OMT_DOWNLOAD_ORIGIN)
+                    .send()
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        last_err = Some(AppError::Other(format!("GET {url}: {e}")));
+                        continue;
+                    }
+                };
+                let status = resp.status();
+                if !status.is_success() {
+                    let code = status.as_u16();
+                    if matches!(code, 403 | 404) {
+                        last_err = Some(AppError::Api {
+                            status: code,
+                            message: format!("Failed to download {url}"),
+                        });
+                        continue;
+                    }
+                    return Err(AppError::Api {
+                        status: code,
+                        message: format!("Failed to download {url}"),
+                    });
+                }
+                match resp.bytes().await {
+                    Ok(b) => {
+                        body = Some(b.to_vec());
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = Some(AppError::Other(format!("read body {url}: {e}")));
+                    }
+                }
+            }
+
+            let bytes = body.ok_or_else(|| {
+                last_err.unwrap_or_else(|| AppError::Other("map download: no candidates succeeded".into()))
+            })?;
+
             let file_name = Path::new(&u.url)
                 .file_name()
                 .and_then(|n| n.to_str())

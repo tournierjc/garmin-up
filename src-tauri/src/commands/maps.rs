@@ -247,11 +247,12 @@ pub async fn download_and_install_map_update(
             .collect(),
     };
 
-    let details = client
-        .get_download_details_json(full_unit_info.clone(), &part_number)
-        .await?;
+    // Activate before GetDownloadDetails (Express order); pairs with CDN auth cookies.
     client
-        .activate_map_update_json(full_unit_info, matched, vec![pn_install])
+        .activate_map_update_json(full_unit_info.clone(), matched, vec![pn_install])
+        .await?;
+    let details = client
+        .get_download_details_json(full_unit_info, &part_number)
         .await?;
 
     drop(devices);
