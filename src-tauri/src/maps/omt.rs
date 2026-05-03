@@ -22,6 +22,8 @@ const PRELOADED_MAP_UPDATES_URL: &str =
     "https://omt.garmin.com/Rce/ProtobufApi/MapUpdateService/GetPreloadedMapUpdates";
 const DOWNLOAD_DETAILS_URL: &str =
     "https://omt.garmin.com/Rce/ProtobufApi/MapUpdateService/GetDownloadDetails";
+const ACTIVATE_MAP_UPDATE_URL: &str =
+    "https://omt.garmin.com/Rce/ProtobufApi/MapUpdateService/ActivateMapUpdate";
 
 #[derive(Debug, Clone, Deserialize)]
 struct UnitInfoResponse {
@@ -80,13 +82,13 @@ pub struct JsonAutoCheckSettings {
 
 // Shapes mirror Garmin Express JSON; only a subset is used after deserialize.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonMapUpdateInfo {
-    #[serde(rename = "ProductKey", default)]
+    #[serde(rename = "ProductKey", default, skip_serializing_if = "Option::is_none")]
     pub product_key: Option<String>,
     #[serde(rename = "IsReinstall")]
     pub is_reinstall: bool,
-    #[serde(rename = "PartNumber", default)]
+    #[serde(rename = "PartNumber", default, skip_serializing_if = "Option::is_none")]
     pub part_number: Option<String>,
     #[serde(rename = "UpdateType")]
     pub update_type: i32,
@@ -94,16 +96,37 @@ pub struct JsonMapUpdateInfo {
     pub major_version: i32,
     #[serde(rename = "MinorVersion")]
     pub minor_version: i32,
-    #[serde(rename = "ProductGroup", default)]
+    #[serde(rename = "ProductGroup", default, skip_serializing_if = "Option::is_none")]
     pub product_group: Option<String>,
-    #[serde(rename = "DisplayName", default)]
+    #[serde(rename = "DisplayName", default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
-    #[serde(rename = "EulaUrl", default)]
+    #[serde(rename = "EulaUrl", default, skip_serializing_if = "Option::is_none")]
     pub eula_url: Option<String>,
     #[serde(rename = "CanAutoStartDownload")]
     pub can_auto_start_download: bool,
-    #[serde(rename = "ReleaseNotes", default)]
+    #[serde(rename = "ReleaseNotes", default, skip_serializing_if = "Option::is_none")]
     pub release_notes: Option<String>,
+}
+
+fn normalize_map_part_number(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+/// Match a map update from `GetPreloadedMapUpdates` to the part number the UI selected.
+pub fn find_map_update_by_part_number<'a>(
+    updates: &'a [JsonMapUpdateInfo],
+    part_number: &str,
+) -> Option<&'a JsonMapUpdateInfo> {
+    let want = normalize_map_part_number(part_number);
+    updates.iter().find(|u| {
+        u.part_number
+            .as_ref()
+            .map(|pn| normalize_map_part_number(pn) == want)
+            .unwrap_or(false)
+    })
 }
 
 #[allow(dead_code)]
@@ -175,6 +198,18 @@ pub struct JsonDownloadDetailsRequest {
     pub full_unit_info: JsonFullUnitInfo,
     #[serde(rename = "PartNumber")]
     pub part_number: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonActivateMapUpdateRequest {
+    #[serde(rename = "ClientInfo")]
+    pub client_info: JsonClientInfo,
+    #[serde(rename = "FullUnitInfo")]
+    pub full_unit_info: JsonFullUnitInfo,
+    #[serde(rename = "UpdateInfo")]
+    pub update_info: JsonMapUpdateInfo,
+    #[serde(rename = "PartNumbersToInstall")]
+    pub part_numbers_to_install: Vec<String>,
 }
 
 #[allow(dead_code)]
@@ -567,6 +602,42 @@ impl MapUpdateClient {
         let body = resp.bytes().await?;
         serde_json::from_slice(&body).map_err(AppError::Json)
     }
+
+    /// Garmin Express calls this before pulling `.img` blobs from `omtmapupdate` CDNs (403 otherwise).
+    pub async fn activate_map_update_json(
+        &self,
+        full_unit_info: JsonFullUnitInfo,
+        update_info: &JsonMapUpdateInfo,
+        part_numbers_to_install: Vec<String>,
+    ) -> Result<(), AppError> {
+        let locale = detect_accept_language().replace('-', "_");
+        let req_body = JsonActivateMapUpdateRequest {
+            client_info: JsonClientInfo { locale_code: locale },
+            full_unit_info,
+            update_info: update_info.clone(),
+            part_numbers_to_install,
+        };
+
+        let resp = self
+            .http
+            .post(ACTIVATE_MAP_UPDATE_URL)
+            .header("Accept-Language", detect_accept_language())
+            .header(reqwest::header::ACCEPT, "application/json")
+            .json(&req_body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        let message = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(AppError::Api {
+                status: status.as_u16(),
+                message,
+            });
+        }
+        tracing::trace!(body = %message, "ActivateMapUpdate");
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -769,6 +840,7 @@ impl MapInstaller {
 
             let req = http
                 .get(&url)
+                .header(reqwest::header::ACCEPT, "*/*")
                 .header(reqwest::header::REFERER, OMT_DOWNLOAD_REFERER);
 
             let resp = req.send().await?;
@@ -794,9 +866,30 @@ impl MapInstaller {
 
 #[cfg(test)]
 mod tests {
+    use super::find_map_update_by_part_number;
     use super::MapUpdateClient;
+    use super::JsonMapUpdateInfo;
     use super::proto;
     use prost::Message;
+
+    #[test]
+    fn find_map_update_matches_part_case_and_whitespace() {
+        let u = JsonMapUpdateInfo {
+            product_key: None,
+            is_reinstall: false,
+            part_number: Some("006-D9486-07".into()),
+            update_type: 0,
+            major_version: 1,
+            minor_version: 0,
+            product_group: None,
+            display_name: None,
+            eula_url: None,
+            can_auto_start_download: false,
+            release_notes: None,
+        };
+        assert!(find_map_update_by_part_number(&[u.clone()], "006-d9486-07 ").is_some());
+        assert!(find_map_update_by_part_number(&[u], "00 6-D948 6-07").is_some());
+    }
 
     /// Fixed payload so Rust `prost` wire matches `tools/omt-probe` (Garmin DTO + protobuf-net).
     #[test]

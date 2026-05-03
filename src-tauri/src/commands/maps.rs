@@ -3,7 +3,7 @@ use tauri::State;
 
 use crate::device::{device_fs, resolve_garmin_volume_dir, join_uri_leaf, DeviceState};
 use crate::error::AppError;
-use crate::maps::omt::{MapInstaller, MapUpdateClient};
+use crate::maps::omt::{find_map_update_by_part_number, MapInstaller, MapUpdateClient};
 use crate::xml::garmin_device;
 use crate::maps::scanner::{self, InstalledMap};
 use serde::Serialize;
@@ -191,7 +191,24 @@ pub async fn download_and_install_map_update(
             ))
         })?;
     let xml_path = join_uri_leaf(&garmin_vol, "GarminDevice.xml");
+    let device_xml = device_fs::read_to_string(&xml_path).await.ok();
     let parsed = garmin_device::parse_file(&xml_path)?;
+
+    let client = MapUpdateClient::new()?;
+    let (_, preload) = client
+        .get_preloaded_map_updates_json(&device.unit_id, &device.part_number, device_xml)
+        .await?;
+    let updates = preload.map_updates.as_deref().unwrap_or_default();
+    let matched = find_map_update_by_part_number(updates, &part_number).ok_or_else(|| {
+        AppError::Other(format!(
+            "Map update {part_number} is not in Garmin's current preload list — refresh updates and try again."
+        ))
+    })?;
+    let pn_install = matched
+        .part_number
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| part_number.clone());
 
     let full_unit_info = crate::maps::omt::JsonFullUnitInfo {
         unit_id: parsed.id.parse::<i64>().unwrap_or(0),
@@ -230,9 +247,11 @@ pub async fn download_and_install_map_update(
             .collect(),
     };
 
-    let client = MapUpdateClient::new()?;
     let details = client
-        .get_download_details_json(full_unit_info, &part_number)
+        .get_download_details_json(full_unit_info.clone(), &part_number)
+        .await?;
+    client
+        .activate_map_update_json(full_unit_info, matched, vec![pn_install])
         .await?;
 
     drop(devices);
