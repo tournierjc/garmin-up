@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +35,11 @@ impl FirmwareChecker {
     pub fn new() -> Result<Self, AppError> {
         let http = Client::builder()
             .user_agent("Garmin Express/7.28.0")
+            // Garmin `www` front-ends are flaky over HTTP/2 with some rustls stacks; match Express-style HTTP/1.1.
+            .http1_only()
+            .connect_timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(120))
+            .gzip(true)
             .build()?;
         Ok(Self { http })
     }
@@ -54,9 +61,20 @@ impl FirmwareChecker {
             request.current_version,
         );
 
-        let resp = self.http
+        let lang = std::env::var("LANG")
+            .ok()
+            .and_then(|l| l.split('.').next().map(|s| s.replace('_', "-")))
+            .filter(|s| s.contains('-'))
+            .unwrap_or_else(|| "en-US".into());
+
+        let resp = self
+            .http
             .post(EXPRESS_UPDATE_URL)
-            .header("Content-Type", "application/xml")
+            .header("Content-Type", "application/xml; charset=utf-8")
+            .header(reqwest::header::ACCEPT, "application/xml, text/xml, */*;q=0.9")
+            .header(reqwest::header::ACCEPT_LANGUAGE, &lang)
+            .header(reqwest::header::REFERER, "https://www.garmin.com/express/")
+            .header(reqwest::header::ORIGIN, "https://www.garmin.com")
             .body(xml_body)
             .send()
             .await?;

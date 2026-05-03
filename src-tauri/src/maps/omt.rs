@@ -419,7 +419,8 @@ impl MapUpdateClient {
         Ok(Self { http, session_id })
     }
 
-    fn omt_headers(&self) -> HeaderMap {
+    /// OMT API headers (also used as a **second-pass** fallback on map CDN 403).
+    pub fn omt_headers(&self) -> HeaderMap {
         garmin_omt_api_headers(&self.session_id)
     }
 
@@ -753,8 +754,11 @@ pub struct MapInstaller;
 
 impl MapInstaller {
     /// `http`: use [`MapUpdateClient::http`] from the client that fetched `details` so cookies match.
+    /// `omt_auth_for_map_cdn`: if set, after plain CDN GETs fail we retry with [`MapUpdateClient::omt_headers`]
+    /// (some edges require session headers + cookies together).
     pub async fn install_download_details_json_to_device(
         http: &Client,
+        omt_auth_for_map_cdn: Option<HeaderMap>,
         details: &JsonDownloadedDetailsResponse,
         device_mount: &Path,
     ) -> Result<Vec<PathBuf>, AppError> {
@@ -788,6 +792,7 @@ impl MapInstaller {
                 http,
                 host,
                 &cdn_origins,
+                omt_auth_for_map_cdn.as_ref(),
                 &content.urls,
                 &garmin_dir,
                 &mut installed,
@@ -889,18 +894,47 @@ impl MapInstaller {
         Ok(())
     }
 
+    async fn map_cdn_get(
+        http: &Client,
+        url: &str,
+        omt_auth: Option<&HeaderMap>,
+    ) -> Result<Vec<u8>, AppError> {
+        const REFERER: &str = "https://omt.garmin.com/";
+        const ORIGIN: &str = "https://omt.garmin.com";
+        let mut req = http.get(url);
+        if let Some(h) = omt_auth {
+            req = req.headers(h.clone());
+        }
+        let resp = req
+            .header(reqwest::header::ACCEPT, "*/*")
+            .header(reqwest::header::REFERER, REFERER)
+            .header(reqwest::header::ORIGIN, ORIGIN)
+            .send()
+            .await
+            .map_err(|e| AppError::Other(format!("GET {url}: {e}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(AppError::Api {
+                status: status.as_u16(),
+                message: format!("Failed to download {url}"),
+            });
+        }
+        let b = resp
+            .bytes()
+            .await
+            .map_err(|e| AppError::Other(format!("read body {url}: {e}")))?;
+        Ok(b.to_vec())
+    }
+
     async fn download_urls_json(
         http: &Client,
         host: &str,
         cdn_origins: &[String],
+        omt_auth_for_map_cdn: Option<&HeaderMap>,
         urls: &[JsonUrlDto],
         garmin_dir: &Path,
         installed: &mut Vec<PathBuf>,
     ) -> Result<(), AppError> {
-        /// Many CDNs deny hotlinking without Express context.
-        const OMT_DOWNLOAD_REFERER: &str = "https://omt.garmin.com/";
-        const OMT_DOWNLOAD_ORIGIN: &str = "https://omt.garmin.com";
-
         for u in urls {
             let mut seen = HashSet::<String>::new();
             let mut candidates: Vec<String> = Vec::new();
@@ -937,43 +971,20 @@ impl MapInstaller {
 
             let mut last_err: Option<AppError> = None;
             let mut body: Option<Vec<u8>> = None;
-            for url in &candidates {
-                let resp = match http
-                    .get(url)
-                    .header(reqwest::header::ACCEPT, "*/*")
-                    .header(reqwest::header::REFERER, OMT_DOWNLOAD_REFERER)
-                    .header(reqwest::header::ORIGIN, OMT_DOWNLOAD_ORIGIN)
-                    .send()
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        last_err = Some(AppError::Other(format!("GET {url}: {e}")));
-                        continue;
-                    }
-                };
-                let status = resp.status();
-                if !status.is_success() {
-                    let code = status.as_u16();
-                    if matches!(code, 403 | 404) {
-                        last_err = Some(AppError::Api {
-                            status: code,
-                            message: format!("Failed to download {url}"),
-                        });
-                        continue;
-                    }
-                    return Err(AppError::Api {
-                        status: code,
-                        message: format!("Failed to download {url}"),
-                    });
-                }
-                match resp.bytes().await {
-                    Ok(b) => {
-                        body = Some(b.to_vec());
-                        break;
-                    }
-                    Err(e) => {
-                        last_err = Some(AppError::Other(format!("read body {url}: {e}")));
+
+            let mut auth_rounds: Vec<Option<&HeaderMap>> = vec![None];
+            if let Some(h) = omt_auth_for_map_cdn {
+                auth_rounds.push(Some(h));
+            }
+
+            'fetched: for auth in auth_rounds {
+                for url in &candidates {
+                    match Self::map_cdn_get(http, url, auth).await {
+                        Ok(b) => {
+                            body = Some(b);
+                            break 'fetched;
+                        }
+                        Err(e) => last_err = Some(e),
                     }
                 }
             }

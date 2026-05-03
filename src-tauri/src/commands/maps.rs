@@ -257,9 +257,13 @@ pub async fn download_and_install_map_update(
 
     drop(devices);
 
-    let installed =
-        MapInstaller::install_download_details_json_to_device(client.http(), &details, &mount)
-            .await?;
+    let installed = MapInstaller::install_download_details_json_to_device(
+        client.http(),
+        Some(client.omt_headers()),
+        &details,
+        &mount,
+    )
+    .await?;
     Ok(installed
         .into_iter()
         .map(|p| p.display().to_string())
