@@ -12,9 +12,11 @@ const OAUTH1_PREAUTHORIZED: &str = "https://connectapi.garmin.com/oauth-service/
 const OAUTH2_EXCHANGE: &str = "https://connectapi.garmin.com/oauth-service/oauth/exchange/user/2.0";
 const SOCIAL_PROFILE: &str = "https://connectapi.garmin.com/userprofile-service/socialProfile";
 
-const CLIENT_ID: &str = "GCM_ANDROID_DARK";
-const SERVICE_URL: &str = "https://mobile.integration.garmin.com/gcm/android";
-const USER_AGENT: &str = "com.garmin.android.apps.connectmobile";
+// Match python-garminconnect primary mobile strategy: iOS client + Safari UA. The Android
+// client (`GCM_ANDROID_DARK` + package UA) is rate-limited / blocked more often by Cloudflare.
+const CLIENT_ID: &str = "GCM_IOS_DARK";
+const SERVICE_URL: &str = "https://mobile.integration.garmin.com/gcm/ios";
+const USER_AGENT: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148";
 
 pub struct GarminAuth {
     http: Client,
@@ -101,6 +103,9 @@ impl GarminAuth {
             .send()
             .await?;
 
+        // Garmin / Cloudflare treat instant GET→POST as bot-like (python-garminconnect uses a delay).
+        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+
         let login_body = serde_json::json!({
             "username": email,
             "password": password,
@@ -108,6 +113,7 @@ impl GarminAuth {
             "captchaToken": ""
         });
 
+        let referer = format!("{SSO_LOGIN_PAGE}?clientId={CLIENT_ID}");
         let resp = self.http
             .post(SSO_LOGIN_API)
             .query(&[
@@ -116,33 +122,78 @@ impl GarminAuth {
                 ("service", SERVICE_URL),
             ])
             .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json, text/plain, */*")
             .header(header::ORIGIN, "https://sso.garmin.com")
-            .header(header::REFERER, SSO_LOGIN_PAGE)
+            .header(header::REFERER, &referer)
             .json(&login_body)
             .send()
             .await?;
 
-        let body: serde_json::Value = resp.json().await?;
+        let status = resp.status();
+        let text = resp.text().await?;
 
-        let response_type = body["responseStatus"]["type"]
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(AppError::Auth(
+                "Garmin SSO rate-limited this connection (HTTP 429). Wait a few minutes, try again, or use another network.".into(),
+            ));
+        }
+
+        let body: serde_json::Value = serde_json::from_str(&text).map_err(|_| {
+            let preview: String = text.chars().take(240).collect();
+            AppError::Auth(format!(
+                "Garmin SSO returned non-JSON (HTTP {}): {preview}",
+                status.as_u16()
+            ))
+        })?;
+
+        // Newer Garmin errors omit `responseStatus` and use top-level `error` (often 429 in JSON).
+        if let Some(err) = body.get("error") {
+            let code = err
+                .get("status-code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let msg = err.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            let rid = err.get("request-id").and_then(|v| v.as_str()).unwrap_or("");
+            if code == "429" {
+                return Err(AppError::Auth(
+                    "Garmin SSO rate-limited (429). Wait several minutes or try another network/VPN.".into(),
+                ));
+            }
+            return Err(AppError::Auth(format!(
+                "Garmin SSO error ({code}): {msg} (request-id: {rid})"
+            )));
+        }
+
+        let response_type = body["responseStatus"]["type"].as_str().unwrap_or("");
+        let status_detail = body["responseStatus"]["message"]
             .as_str()
-            .unwrap_or("UNKNOWN");
+            .or_else(|| body["responseStatus"]["details"].as_str())
+            .filter(|s| !s.is_empty());
 
         match response_type {
-            "SUCCESSFUL" => {
-                body["serviceTicketId"]
-                    .as_str()
-                    .map(|s| s.to_string())
-                    .ok_or_else(|| AppError::Auth("Login succeeded but no ticket returned".into()))
+            "SUCCESSFUL" => body["serviceTicketId"]
+                .as_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| AppError::Auth("Login succeeded but no ticket returned".into())),
+            "MFA_REQUIRED" => Err(AppError::Auth("MFA required — not supported in garmin-up yet. Use Garmin Connect web or app once, then try again if Garmin relaxes MFA for API login.".into())),
+            "INVALID_USERNAME_PASSWORD" => Err(AppError::Auth("Invalid email or password.".into())),
+            "" => {
+                let preview: String = serde_json::to_string(&body)
+                    .unwrap_or_else(|_| text.clone())
+                    .chars()
+                    .take(400)
+                    .collect();
+                Err(AppError::Auth(format!(
+                    "Garmin SSO returned an unexpected JSON shape (no responseStatus.type). Preview: {preview}"
+                )))
             }
-            "MFA_REQUIRED" => {
-                Err(AppError::Auth("MFA required - not yet supported".into()))
-            }
-            "INVALID_USERNAME_PASSWORD" => {
-                Err(AppError::Auth("Invalid username or password".into()))
-            }
-            _ => {
-                Err(AppError::Auth(format!("SSO login failed: {}", response_type)))
+            other => {
+                let suffix = status_detail
+                    .map(|d| format!(" — {d}"))
+                    .unwrap_or_default();
+                Err(AppError::Auth(format!(
+                    "SSO login failed: {other}{suffix}"
+                )))
             }
         }
     }
