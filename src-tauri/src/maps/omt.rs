@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use base64::Engine as _;
 use reqwest::header::HeaderMap;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -34,7 +35,7 @@ const MAP_OTM_LEGACY_HOST: &str = "https://omtmapupdate.garmin.com";
 
 /// Garmin Express `OmtRestClient` headers — attach **only** to `omt.garmin.com` API calls, not map CDN GETs
 /// (some CDNs return 403 if `Garmin-Client-*` is present on `omtmapupdate.garmin.com`).
-fn garmin_omt_api_headers(session_id: &str) -> HeaderMap {
+fn garmin_omt_api_headers_with_auth(session_id: &str, bearer_token: Option<&str>) -> HeaderMap {
     let locale = detect_accept_language();
     let platform_version = std::process::Command::new("uname")
         .arg("-r")
@@ -79,6 +80,11 @@ fn garmin_omt_api_headers(session_id: &str) -> HeaderMap {
         reqwest::header::HeaderValue::from_str(&locale)
             .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("en-US")),
     );
+    if let Some(token) = bearer_token {
+        if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}")) {
+            h.insert(reqwest::header::AUTHORIZATION, val);
+        }
+    }
     h
 }
 
@@ -427,10 +433,21 @@ pub struct JsonDownloadedDetailsResponse {
 pub struct MapUpdateClient {
     http: Client,
     session_id: String,
+    /// Optional Garmin Connect Bearer token (OAuth2 DI or OMT JWT) for authenticated OMT API calls.
+    bearer_token: Option<String>,
 }
+
+const OMT_JWT_URL: &str = "https://omt.garmin.com/api/auth/tokens";
 
 impl MapUpdateClient {
     pub fn new() -> Result<Self, AppError> {
+        Self::new_with_auth(None)
+    }
+
+    /// Build a client that adds `Authorization: Bearer {token}` to every OMT API call,
+    /// matching what Garmin Express does with its OmtJWT.  The token is the caller's
+    /// Garmin Connect DI OAuth-2 access token (or a pre-fetched OMT JWT if available).
+    pub fn new_with_auth(bearer_token: Option<String>) -> Result<Self, AppError> {
         // Cookie jar is shared with map CDN GETs; `Garmin-Client-*` is added per OMT API request only
         // (see `garmin_omt_api_headers`) so `omtmapupdate` WAFs do not see Express-only headers.
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -442,12 +459,74 @@ impl MapUpdateClient {
             .connect_timeout(Duration::from_secs(30))
             .timeout(Duration::from_secs(900))
             .build()?;
-        Ok(Self { http, session_id })
+        Ok(Self { http, session_id, bearer_token })
+    }
+
+    /// Exchange a Garmin Connect DI OAuth2 token for an OMT-specific JWT.
+    ///
+    /// Express calls `POST /api/auth/tokens/{customerId}` with the IT-services Bearer token.
+    /// We attempt the same using the Connect DI token.  The `customerId` is decoded from the
+    /// JWT `sub` claim (a UUID or numeric ID stored as the subject).
+    ///
+    /// Returns the OMT JWT string on success; falls back to `None` on any error so the caller
+    /// can still proceed with the DI token.
+    pub async fn exchange_for_omt_jwt(di_token: &str) -> Option<String> {
+        // Decode the DI JWT (no signature verification needed — we only want the `sub` claim).
+        let customer_id = Self::jwt_subject(di_token)?;
+        let url = format!("{OMT_JWT_URL}/{customer_id}");
+
+        let http = Client::builder()
+            .user_agent("Garmin Express/7.28.0")
+            .http1_only()
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .ok()?;
+
+        let resp = http
+            .post(&url)
+            .bearer_auth(di_token)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+            .ok()?;
+
+        if !resp.status().is_success() {
+            tracing::warn!(
+                "OMT JWT exchange failed ({}): {}",
+                resp.status(),
+                resp.text().await.unwrap_or_default()
+            );
+            return None;
+        }
+
+        let body: serde_json::Value = resp.json().await.ok()?;
+        body["Token"].as_str().map(|s| s.to_string())
+    }
+
+    /// Extract the `sub` (subject) claim from a Base64url-encoded JWT without verifying the
+    /// signature.  Returns `None` if the token is malformed or the claim is missing/empty.
+    fn jwt_subject(jwt: &str) -> Option<String> {
+        let payload = jwt.split('.').nth(1)?;
+        // JWT uses base64url without padding.
+        let padded = match payload.len() % 4 {
+            2 => format!("{payload}=="),
+            3 => format!("{payload}="),
+            _ => payload.to_string(),
+        };
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .or_else(|_| {
+                base64::engine::general_purpose::STANDARD.decode(&padded)
+            })
+            .ok()?;
+        let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+        claims["sub"].as_str().map(|s| s.to_string())
     }
 
     /// OMT API headers (also used as a **second-pass** fallback on map CDN 403).
     pub fn omt_headers(&self) -> HeaderMap {
-        garmin_omt_api_headers(&self.session_id)
+        garmin_omt_api_headers_with_auth(&self.session_id, self.bearer_token.as_deref())
     }
 
     /// Same HTTP client used for OMT JSON APIs and map CDN downloads so `Set-Cookie` from OMT applies.

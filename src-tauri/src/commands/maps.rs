@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use tauri::State;
 
+use crate::commands::connect::ConnectState;
 use crate::device::{device_fs, resolve_garmin_volume_dir, join_uri_leaf, DeviceState};
 use crate::error::AppError;
 use crate::maps::omt::{find_map_update_by_part_number, MapInstaller, MapUpdateClient};
@@ -173,6 +174,7 @@ pub async fn download_and_install_map_update(
     unit_id: String,
     part_number: String,
     state: State<'_, DeviceState>,
+    connect: State<'_, ConnectState>,
 ) -> Result<Vec<String>, AppError> {
     let devices = state.devices.lock().await;
     let device = devices
@@ -194,7 +196,34 @@ pub async fn download_and_install_map_update(
     let device_xml = device_fs::read_to_string(&xml_path).await.ok();
     let parsed = garmin_device::parse_file(&xml_path)?;
 
-    let client = MapUpdateClient::new()?;
+    // Garmin's CDN (omtmapupdate.garmin.com) validates that ActivateMapUpdate was called with an
+    // authenticated user session.  When logged in, exchange the Connect DI token for an OMT JWT
+    // (same flow as Garmin Express) and attach it to every OMT API call as `Authorization: Bearer`.
+    let bearer_token: Option<String> = {
+        let session_guard = connect.session.lock().await;
+        if let Some(session) = session_guard.as_ref() {
+            let di_token = &session.oauth2.access_token;
+            match MapUpdateClient::exchange_for_omt_jwt(di_token).await {
+                Some(jwt) => {
+                    tracing::info!("Obtained OMT JWT for authenticated map download");
+                    Some(jwt)
+                }
+                None => {
+                    // OMT JWT exchange failed — fall back to DI token directly.
+                    tracing::warn!("OMT JWT exchange failed; using DI token as Bearer fallback");
+                    Some(di_token.clone())
+                }
+            }
+        } else {
+            tracing::warn!(
+                "No Garmin Connect session — map CDN may reject the download. \
+                 Log in via the Connect tab for authenticated downloads."
+            );
+            None
+        }
+    };
+
+    let client = MapUpdateClient::new_with_auth(bearer_token)?;
     let (_, preload) = client
         .get_preloaded_map_updates_json(&device.unit_id, &device.part_number, device_xml)
         .await?;

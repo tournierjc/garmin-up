@@ -1,0 +1,66 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Networking</AssemblyName>
+    <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
+    <TargetFramework>netstandard2.0</TargetFramework>
+  </PropertyGroup>
+  <PropertyGroup>
+    <LangVersion>12.0</LangVersion>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <PropertyGroup />
+  <ItemGroup />
+  <ItemGroup>
+    <Reference Include="Microsoft.IdentityModel.JsonWebTokens">
+      <HintPath>../../garmin/Microsoft.IdentityModel.JsonWebTokens.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.Extensions.Logging.Abstractions">
+      <HintPath>../../garmin/Microsoft.Extensions.Logging.Abstractions.dll</HintPath>
+    </Reference>
+    <Reference Include="RestSharp">
+      <HintPath>../../garmin/RestSharp.dll</HintPath>
+    </Reference>
+    <Reference Include="LiteDB">
+      <HintPath>../../garmin/LiteDB.dll</HintPath>
+    </Reference>
+    <Reference Include="Services">
+      <HintPath>../../garmin/Services.dll</HintPath>
+    </Reference>
+    <Reference Include="Autofac">
+      <HintPath>../../garmin/Autofac.dll</HintPath>
+    </Reference>
+    <Reference Include="DeviceXmlUtil">
+      <HintPath>../../garmin/DeviceXmlUtil.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Threading.Tasks.Extensions">
+      <HintPath>../../garmin/System.Threading.Tasks.Extensions.dll</HintPath>
+    </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>../../garmin/Newtonsoft.Json.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Collections.Immutable">
+      <HintPath>../../garmin/System.Collections.Immutable.dll</HintPath>
+    </Reference>
+    <Reference Include="Utilities">
+      <HintPath>../../garmin/Utilities.dll</HintPath>
+    </Reference>
+    <Reference Include="Polly">
+      <HintPath>../../garmin/Polly.dll</HintPath>
+    </Reference>
+    <Reference Include="TestableIO.System.IO.Abstractions">
+      <HintPath>../../garmin/TestableIO.System.IO.Abstractions.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Security.Cryptography.ProtectedData">
+      <HintPath>../../garmin/System.Security.Cryptography.ProtectedData.dll</HintPath>
+    </Reference>
+    <Reference Include="Polly.Contrib.DuplicateRequestCollapser">
+      <HintPath>../../garmin/Polly.Contrib.DuplicateRequestCollapser.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.IdentityModel.Tokens">
+      <HintPath>../../garmin/Microsoft.IdentityModel.Tokens.dll</HintPath>
+    </Reference>
+    <Reference Include="RestSharp.Serializers.NewtonsoftJson">
+      <HintPath>../../garmin/RestSharp.Serializers.NewtonsoftJson.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>
