@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use reqwest::header::HeaderMap;
 use reqwest::Client;
@@ -30,9 +31,6 @@ const ACTIVATE_MAP_UPDATE_URL: &str =
 const MAP_OTM_DEFAULT_HOST: &str = "https://worldwide.omtmapupdate.garmin.com";
 /// Express often resolves relative `rmu/...` against this host (see `DownloadHosts` vs worldwide).
 const MAP_OTM_LEGACY_HOST: &str = "https://omtmapupdate.garmin.com";
-
-/// Browser-like UA for map CDN GETs (Express `DownloadManager` uses a generic `HttpClient`, not `Garmin Express` UA on all builds).
-const MAP_CDN_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 /// Garmin Express `OmtRestClient` headers — attach **only** to `omt.garmin.com` API calls, not map CDN GETs
 /// (some CDNs return 403 if `Garmin-Client-*` is present on `omtmapupdate.garmin.com`).
@@ -115,6 +113,24 @@ fn map_cdn_origin_candidates(hosts: Option<&JsonDownloadHosts>) -> Vec<String> {
     v.push(MAP_OTM_DEFAULT_HOST.to_string());
     let mut seen = HashSet::new();
     v.into_iter().filter(|s| seen.insert(s.clone())).collect()
+}
+
+/// Absolute map URLs from `GetDownloadDetails` often point at `worldwide.omtmapupdate…` first.
+/// Try alternate CDN origins **before** the original URL so regional / legacy hosts are hit first.
+fn map_absolute_download_candidates(original: &str, cdn_origins: &[String]) -> Vec<String> {
+    let mut seen = HashSet::<String>::new();
+    let mut out = Vec::new();
+    for origin in cdn_origins {
+        if let Some(rew) = rewrite_map_download_url(original, origin) {
+            if seen.insert(rew.clone()) {
+                out.push(rew);
+            }
+        }
+    }
+    if seen.insert(original.to_string()) {
+        out.push(original.to_string());
+    }
+    out
 }
 
 fn rewrite_map_download_url(original: &str, new_origin_base: &str) -> Option<String> {
@@ -421,6 +437,10 @@ impl MapUpdateClient {
         let http = Client::builder()
             .cookie_store(true)
             .user_agent("Garmin Express/7.28.0")
+            // Match `FirmwareChecker`: some Garmin / Cloudflare edges misbehave on HTTP/2.
+            .http1_only()
+            .connect_timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(900))
             .build()?;
         Ok(Self { http, session_id })
     }
@@ -745,9 +765,8 @@ fn parse_unit_id(unit_id: &str) -> i64 {
 
 /// GET a map payload from `omtmapupdate` / `worldwide.omtmapupdate` CDN.
 ///
-/// Plain requests use a Chrome-like `User-Agent` (Express `DownloadManager` is not always
-/// `Garmin Express/…` on the wire). Optional `omt_auth` retries match the second-pass behavior
-/// in [`MapInstaller::download_urls_json`].
+/// Uses the shared client default `User-Agent` (`Garmin Express/7.28.0`) so OMT API calls and
+/// CDN GETs present a consistent client to Cloudflare. Optional `omt_auth` adds Garmin session headers.
 async fn map_cdn_get(
     http: &Client,
     url: &str,
@@ -759,9 +778,6 @@ async fn map_cdn_get(
     let mut req = http.get(url);
     if let Some(h) = omt_auth {
         req = req.headers(h.clone());
-    }
-    if omt_auth.is_none() {
-        req = req.header(reqwest::header::USER_AGENT, MAP_CDN_USER_AGENT);
     }
     if let Some(c) = cookie {
         let c = c.trim();
@@ -775,9 +791,6 @@ async fn map_cdn_get(
         .header(reqwest::header::ACCEPT, "*/*")
         .header(reqwest::header::REFERER, REFERER)
         .header(reqwest::header::ORIGIN, ORIGIN)
-        .header("Sec-Fetch-Mode", "no-cors")
-        .header("Sec-Fetch-Site", "cross-site")
-        .header("Sec-Fetch-Dest", "empty")
         .send()
         .await
         .map_err(|e| AppError::Other(format!("GET {url}: {e}")))?;
@@ -973,11 +986,8 @@ impl MapInstaller {
             };
 
             if u.url.starts_with("https://") || u.url.starts_with("http://") {
-                push(u.url.clone());
-                for origin in cdn_origins {
-                    if let Some(rew) = rewrite_map_download_url(&u.url, origin) {
-                        push(rew);
-                    }
+                for s in map_absolute_download_candidates(&u.url, cdn_origins) {
+                    push(s);
                 }
             } else if !u.is_relative {
                 continue;
@@ -1000,10 +1010,12 @@ impl MapInstaller {
             let mut last_err: Option<AppError> = None;
             let mut body: Option<Vec<u8>> = None;
 
-            let mut auth_rounds: Vec<Option<&HeaderMap>> = vec![None];
+            // Try session headers + cookies first (Express often has both on the wire), then plain GET.
+            let mut auth_rounds: Vec<Option<&HeaderMap>> = Vec::new();
             if let Some(h) = omt_auth_for_map_cdn {
                 auth_rounds.push(Some(h));
             }
+            auth_rounds.push(None);
 
             'fetched: for auth in auth_rounds {
                 for url in &candidates {
@@ -1092,6 +1104,21 @@ mod tests {
     fn map_cdn_origin_candidates_legacy_host_first_when_no_download_hosts() {
         let v = super::map_cdn_origin_candidates(None);
         assert_eq!(v.first().map(String::as_str), Some(super::MAP_OTM_LEGACY_HOST));
+    }
+
+    #[test]
+    fn map_absolute_download_candidates_try_rewrites_before_original_url() {
+        let origins = vec![
+            "https://omtmapupdate.garmin.com".into(),
+            "https://worldwide.omtmapupdate.garmin.com".into(),
+        ];
+        let abs = "https://worldwide.omtmapupdate.garmin.com/rmu/activeeu/z.img";
+        let v = super::map_absolute_download_candidates(abs, &origins);
+        assert_eq!(v.last().map(String::as_str), Some(abs));
+        assert_eq!(
+            v.first().map(String::as_str),
+            Some("https://omtmapupdate.garmin.com/rmu/activeeu/z.img")
+        );
     }
 
     #[tokio::test]
