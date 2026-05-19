@@ -1,0 +1,5 @@
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+
+# Pin to Rust 1.95 for consistency across projects

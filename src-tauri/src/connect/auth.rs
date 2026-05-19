@@ -362,7 +362,7 @@ fn build_oauth1_header_with_params(
         params.push((k, v.to_string()));
     }
 
-    params.sort_by(|a, b| a.0.cmp(&b.0));
+    params.sort_by(|a, b| a.0.cmp(b.0));
 
     let param_string: String = params.iter()
         .map(|(k, v)| format!("{}={}", percent_encode(k), percent_encode(v)))

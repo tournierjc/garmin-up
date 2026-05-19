@@ -1005,7 +1005,7 @@ impl MapInstaller {
         } else {
             let trash_root = join_uri_leaf(garmin_dir, ".garmin-up-trash");
             device_fs::create_dir(&trash_root).await?;
-            let nested = join_uri_leaf(&trash_root, &ts.to_string());
+            let nested = join_uri_leaf(&trash_root, ts.to_string());
             device_fs::create_dir(&nested).await?;
             nested
         };
@@ -1027,7 +1027,7 @@ impl MapInstaller {
 
             let src = device_fs::join_uri_leaf(garmin_dir, ident);
             let dst = if flat_mtp_quarantine {
-                device_fs::join_uri_leaf(garmin_dir, &format!(".garmin-up-trash.{ts}.{ident}"))
+                device_fs::join_uri_leaf(garmin_dir, format!(".garmin-up-trash.{ts}.{ident}"))
             } else {
                 device_fs::join_uri_leaf(&quarantine_dir, ident)
             };
@@ -1148,7 +1148,7 @@ mod tests {
             can_auto_start_download: false,
             release_notes: None,
         };
-        assert!(find_map_update_by_part_number(&[u.clone()], "006-d9486-07 ").is_some());
+        assert!(find_map_update_by_part_number(std::slice::from_ref(&u), "006-d9486-07 ").is_some());
         assert!(find_map_update_by_part_number(&[u], "00 6-D948 6-07").is_some());
     }
 

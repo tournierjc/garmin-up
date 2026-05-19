@@ -121,8 +121,7 @@ fn spawn_and_wait_with_timeout(
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             let _ = child.kill();
             let _ = child.wait();
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            Err(std::io::Error::other(
                 "output thread disconnected unexpectedly",
             ))
         }
